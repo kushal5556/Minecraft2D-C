@@ -15,7 +15,7 @@
 #define BLOCK_HEIGHT 30
 
 #define  CHUNK_WIDTH 10
-#define  CHUNK_HEIGHT 20
+#define  CHUNK_HEIGHT 100
 
 #define CHUNK_DISTANCE 1 //chunk one both sides (not including current)
 
@@ -25,7 +25,7 @@
 
 #define GRAVITY 300.0f
 
-#define WORLD_SIZE 10
+#define WORLD_SIZE 30
 
 //----- camera ----
 Vector2 CAMERA;
@@ -40,6 +40,7 @@ typedef enum{
 	DIAMOND_ORE,
 	GOLD_ORE,
 	EMERALD_ORE,
+	IRON_ORE,
 	LAVA,
 }BlockType;
 
@@ -74,12 +75,10 @@ typedef struct{
 static Block* targetBlock = NULL;
 static Block* hoveredBlock = NULL;
 static float breakProgress = 0.0f;
-const float TIME_TO_BREAK = 0.8f; 
+const float TIME_TO_BREAK = 0.6f; 
 Vector2 hitPosition = {0};
 
 static float worldSeedOffset = 0.0f;
-
-
 
 // ----- function declaration -----------------
 void InitializeWorldSeed();
@@ -104,9 +103,16 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 void placeBlockAt(Chunk chunks[], int blockChunkIdx, int targetX, int targetY, BlockType type, Vector2 playerPos, Vector2 playerSize);
 bool isBlockBreak(Chunk chunks[], int blockX, int blockY, int chunkIdx);
 
-// world chunks edit
-BlockType noise(float wX, float wY);
 
+// --- noise function ----
+float noise(float X);
+float pseudo_random_2d(int x, int y);
+float smooth_noise(float x);
+float terrain_noise(float X); 
+bool is_cave(float worldX, float worldY);
+
+
+// world chunks edit
 void add_chunk(Chunk chunks[], Vector2 pos);
 
 // collision function
@@ -157,15 +163,15 @@ int main()
 	while(!WindowShouldClose()){
 		// ------------------ update -------------------
 		float dt = GetFrameTime();
-		float speed = 80;
-		float damping = 0.98f;
+		float speed = 200;
+		float damping = 0.99f;
 		player.velocity.y += GRAVITY * dt;
 		player.velocity.x *= damping;
 		player.velocity.y *= damping;
 
 
 		if(IsKeyPressed(KEY_SPACE)){
-			player.velocity.y -= ((GRAVITY/2)+40)*speed * dt;
+			player.velocity.y -= ((GRAVITY/2)+40)*100* dt;
 		}
 		if(IsKeyDown(KEY_S)){
 			player.velocity.y += speed * dt;
@@ -268,7 +274,7 @@ void draw_chunk(Chunk* chunk)
 			bool isBreak = chunk->blocks[idx].isBreak;
 			BlockType type = chunk->blocks[idx].type;
 
-			if(type != AIR && type != WATER){
+			if(type != AIR && type != WATER && type != LAVA){
 				if(isBreak) continue;
 			}
 
@@ -290,6 +296,21 @@ void draw_chunk(Chunk* chunk)
 					break;
 				case BEDROCK:
 					DrawTexture(bedRock, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
+					break;
+				case LAVA:
+					DrawTexture(lavaBlock, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
+					break;
+				case DIAMOND_ORE:
+					DrawTexture(diamondOre, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
+					break;
+				case IRON_ORE:
+					DrawTexture(ironOre, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
+					break;
+				case GOLD_ORE:
+					DrawTexture(goldOre, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
+					break;
+				case EMERALD_ORE:
+					DrawTexture(emeraldOre, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
 					break;
 				default:
 					break;
@@ -316,44 +337,85 @@ void draw_chunk(Chunk* chunk)
 
 void init_chunk(Chunk* chunk)
 {
-	for(int x = 0; x < CHUNK_WIDTH; x++){
-		float worldX = chunk->position.x + (x * BLOCK_WIDTH);
-		for(int y = 0; y < CHUNK_HEIGHT; y++){
-			int idx = x + (y * CHUNK_WIDTH);
+    float waterLevel = 0.0f; // Water forms in valleys around Y = -20 to Y = 0
 
-			float worldY = chunk->position.y + (y * BLOCK_HEIGHT);
-			BlockType type = noise(worldX, worldY);
+    for(int x = 0; x < CHUNK_WIDTH; x++){
+        float worldX = chunk->position.x + (x * BLOCK_WIDTH);
+        float surface = noise(worldX);
 
-			chunk->blocks[idx] = (Block){0};
-			chunk->blocks[idx].isBreak = false;
-			chunk->blocks[idx].isHover = false;
+        for(int y = 0; y < CHUNK_HEIGHT; y++){
+            int idx = x + (y * CHUNK_WIDTH);
+            float worldY = chunk->position.y + (y * BLOCK_HEIGHT);
 
-			if(y == CHUNK_HEIGHT-1){
-				chunk->blocks[idx].type = BEDROCK;
-			}else{
-				switch(type){
-					case AIR:
-						chunk->blocks[idx].type = AIR;
-						chunk->blocks[idx].isBreak = true;
-						break;
-					case WATER:
-						chunk->blocks[idx].type = WATER;
-						chunk->blocks[idx].isBreak = true;
-						break;
-					case STONE:
-						chunk->blocks[idx].type = STONE;
-						break;
-					case GRASS:
-						chunk->blocks[idx].type = GRASS;
-						break;
-					default:
-						printf("[TYPE ERROR]: %f (%d,%d)\n", chunk->position.x, x,y);	
-						break;
-				}
-			}
-		}
-	}
+            chunk->blocks[idx] = (Block){0};
+            chunk->blocks[idx].isBreak = false;
+            chunk->blocks[idx].isHover = false;
+
+            // 1. Bedrock at the bottom of the chunk (maximum positive Y)
+            if(y == CHUNK_HEIGHT - 1 || worldY >= (chunk->position.y + (CHUNK_HEIGHT * BLOCK_HEIGHT) - BLOCK_HEIGHT)) {
+                chunk->blocks[idx].type = BEDROCK;
+                continue;
+            }
+
+            // 2. Air or Water above the surface terrain height
+            if(worldY < surface) {
+                if(worldY >= waterLevel && surface > -40.0f) {
+                    chunk->blocks[idx].type = WATER;
+                    chunk->blocks[idx].isBreak = true;
+                } else {
+                    chunk->blocks[idx].type = AIR;
+                    chunk->blocks[idx].isBreak = true;
+                }
+                continue;
+            }
+
+            // 3. Underground Caves & Lava check
+            // Only carve caves if we are deep enough underground (e.g., 60 pixels below surface)
+            bool carveCave = false;
+            if(worldY > surface + 60.0f) {
+                if(is_cave(worldX, worldY)) {
+                    carveCave = true;
+                }
+            }
+
+            if(carveCave) {
+                // Deep underground Lava check at the very bottom of the caves
+                if(worldY > 300.0f) {
+                    chunk->blocks[idx].type = LAVA;
+                    chunk->blocks[idx].isBreak = true;
+                } else {
+                    chunk->blocks[idx].type = AIR;
+                    chunk->blocks[idx].isBreak = true;
+                }
+                continue;
+            }
+
+            // 4. Surface & Underground Blocks (Grass, Stone, Ores)
+            if(worldY <= surface + (BLOCK_HEIGHT * 2)) {
+                chunk->blocks[idx].type = GRASS;
+            } else {
+                BlockType blockType = STONE;
+
+                // Ores spawn deeper underground (+Y coordinates)
+                float depthUnderground = worldY - surface;
+                float randVal = pseudo_random_2d((int)worldX, (int)worldY);
+                
+                if (depthUnderground > 350.0f && randVal > 0.97f) {
+                    blockType = DIAMOND_ORE;
+                } else if (depthUnderground > 250.0f && randVal > 0.95f) {
+                    blockType = GOLD_ORE;
+                } else if (depthUnderground > 180.0f && randVal > 0.93f) {
+                    blockType = EMERALD_ORE;
+                } else if (depthUnderground > 100.0f && randVal > 0.90f) {
+                    blockType = IRON_ORE;
+                }
+
+                chunk->blocks[idx].type = blockType;
+            }
+        }
+    }
 }
+
 
 void init_world(Chunk chunks[], int size)
 {
@@ -799,61 +861,84 @@ void findHoveredBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize)
 	}
 }
 
-BlockType noise(float wX, float wY)
+// AI noise function
+// Simple pseudo-random hash function for 2D coordinates (useful for caves and ores)
+float pseudo_random_2d(int x, int y) 
 {
-    float SEA_LEVEL_Y = 0.0f;
-    float BASE_HEIGHT = (float)CHUNK_HEIGHT / 2.0f;
+    int n = x + y * 57 + (int)worldSeedOffset;
+    n = (n << 13) ^ n;
+    int nn = (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff;
+    return 1.0f - ((float)nn / 1073741824.0f);
+}
 
-    // 1. DOMAIN WARPING (Breaks the predictable sine symmetry)
-    // Instead of raw sin(x), we warp the coordinate space itself using another sine 
-    // offset. This bends the hills, stretches valleys, and removes the repeating look.
-    float warp = sin((wX + worldSeedOffset) * 0.01f) * 15.0f;
-    float warpedX = wX + worldSeedOffset+ warp;
+// Simple smooth noise function using interpolated pseudo-random values
+float smooth_noise(float x) 
+{
+    int intX = (int)floorf(x);
+    float fracX = x - intX;
+    
+    float v1 = pseudo_random_2d(intX, 0);
+    float v2 = pseudo_random_2d(intX + 1, 0);
+    
+    // Cosine interpolation for smooth transitions (hills/mountains)
+    float ft = fracX * 3.1415927f;
+    float f = (1.0f - cosf(ft)) * 0.5f;
+    
+    return v1 * (1.0f - f) + v2 * f;
+}
 
-    // 2. ORGANIC HEIGHT SYNTHESIS 
-    // Using varied non-integer multipliers so the waves never line up uniformly.
-    float hills = sin(warpedX * 0.0038f) * 142.0f;
-    float details = sin(warpedX * 0.017f) * 112.0f;
-    float roughness = sin(warpedX * 0.053f) * 63.5f;
-
-    float surfaceHeightY = SEA_LEVEL_Y - (BASE_HEIGHT + hills + details + roughness);
-
-    // 3. SKY / AIR CHECK
-    if (wY < surfaceHeightY) {
-        return (BlockType)AIR;
+// Multi-octave terrain noise for mountains and valleys
+float terrain_noise(float X) 
+{
+    float total = 0.0f;
+    float frequency = 0.003f;
+    float amplitude = 1.0f;
+    float maxValue = 0.0f;  // Used for normalizing result
+    
+    int octaves = 4;
+    for(int i = 0; i < octaves; i++) {
+        total += smooth_noise((X + worldSeedOffset) * frequency) * amplitude;
+        maxValue += amplitude;
+        amplitude *= 0.5f;
+        frequency *= 2.0f;
     }
+    
+    return total / maxValue;
+}
 
-    // 4. UNDERGROUND CAVE POCKETS (Winding structural tubes)
-    // Using an intersecting sine/cosine grid offset by world position
-    if (wY > surfaceHeightY + 8.0f) {
-        float caveVal1 = sin((wX + worldSeedOffset) * 0.035f) * sin(wY * 0.035f);
-        float caveVal2 = cos((wY - wX) * 0.025f); // Diagonal tearing factor
+// Main height function combining terrain noise with amplitude for pixel heights
+float noise(float X) 
+{
+    float baseHeight = 0.0f;
+    float mountainAmplitude = 200.0f; // Controls height of mountains and depth of valleys
+    
+    // Scale the noise and map it to world height pixels
+    float n = terrain_noise(X);
+    return baseHeight - (n * mountainAmplitude);
+}
 
-        // Carve out tunnels where waves intersect cleanly
-        if ((caveVal1 > 0.55f && caveVal2 > 0.2f) || (caveVal1 < -0.55f && caveVal2 < -0.2f)) {
-            return (BlockType)AIR;
-        }
-    }
-
-    // 5. FLUID / UNDERGROUND POOLS
-    // Controlled basin check deep down
-    float fluidPocket = cos((wX + worldSeedOffset) * 0.009f);
-    if (wY > (BASE_HEIGHT + 45.0f) && wY < (BASE_HEIGHT + 65.0f) && fluidPocket > 0.75f) {
-        return (BlockType)WATER;
-    }
-
-    // 6. BLOCK VARIETY LAYERING (Reference Guide for your blocks)
-    float depth = wY - surfaceHeightY;
-
-    if (depth < 1.0f) {
-        return (BlockType)GRASS; // Top layer (You can change to Grass later if wY == surfaceHeightY)
-    } 
-    else if (depth < 5.0f) {
-        return (BlockType)GRASS; // Sub-surface soil layer
-    }
-
-    // Everything else deep underneath is solid stone
-    return (BlockType)STONE;
+// 2D Cave noise function
+// Connected, larger cave system using wave interference and smooth contours
+bool is_cave(float worldX, float worldY) {
+    // Only generate caves well below the surface layer
+    // (assuming surface is around Y=0 or negative, and underground is positive Y)
+    
+    // Scale down frequency for larger, sweeping chambers and tunnels
+    float freqX = 0.008f;
+    float freqY = 0.008f;
+    
+    // Create primary winding tunnels
+    float n1 = sinf(worldX * freqX + worldSeedOffset) * cosf(worldY * freqY + worldSeedOffset);
+    
+    // Create secondary branching noise to make them organic and varied
+    float n2 = sinf((worldX + worldY) * 0.005f + (worldSeedOffset * 0.5f));
+    
+    // Combine them to form a continuous network
+    float combined = n1 + (n2 * 0.5f);
+    
+    // A narrow band near zero creates continuous connected tunnels/tubes instead of scattered dots
+    // Adjust the thickness (-0.18f to 0.18f) to make caves wider or thinner
+    return (combined > -0.18f && combined < 0.18f);
 }
 
 void add_chunk(Chunk chunks[], Vector2 pos)
