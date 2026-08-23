@@ -2,6 +2,14 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
+
+// ------------ TODO -------------
+// -> Make the world infinite
+// -> [?] collision (check directly based on index, instead of all neighbouring chunk (100 * 20 * 3 checks ?))
+// -> Player physics (movement, jump)
+// -> Item drop 
+// -> Gameplay physics (collect, pick items)
 
 #define WIDTH  800
 #define HEIGHT 600
@@ -9,6 +17,7 @@
 // --- macros ----
 #define MAX(x,y) (x > y ? x : y)
 #define MIN(x,y) (x < y ? x : y)
+#define NONE -1
 
 // ---- Global Constants-------------
 #define BLOCK_WIDTH 30
@@ -19,11 +28,14 @@
 
 #define CHUNK_DISTANCE 1 //chunk one both sides (not including current)
 
-#define PLAYER_REACH_DISTANCE 3 //blocks
+#define PLAYER_REACH_DISTANCE 5 //blocks
 #define RAY_STEP 10 
 #define RAY_RADIUS 5.0f
 
 #define GRAVITY 300.0f
+#define WATER_FLAT_DIST 4 //blocks
+
+#define MAX_FLUID_LEVEL 7
 
 #define WORLD_SIZE 30
 
@@ -47,9 +59,16 @@ typedef enum{
 }BlockType;
 
 typedef struct{
+	int chunkIdx;
+	int x;
+	int y;
+}FluidParent;
+
+typedef struct{
 	BlockType type;
 	bool isBreak; 
-	bool isHover;
+	int fluid_level;
+	FluidParent fluid_parent;
 }Block;
 
 typedef struct{
@@ -89,6 +108,7 @@ void init_chunk(Chunk* chunk);
 void init_world(Chunk chunks[], int size);
 void draw_chunk(Chunk* chunk);
 
+int getIndex(int x, int y);
 //---chunk edit---
 int chunk_coord(float posX);
 int chunk_index(int chunk_coord);
@@ -113,7 +133,10 @@ float smooth_noise(float x);
 float terrain_noise(float X); 
 bool is_cave(float worldX, float worldY);
 
-void update_chunk(Chunk chunks[], int chunkIdx);
+bool isLiquid(BlockType type);
+bool hasParent(FluidParent parent);
+bool FindParent(Block block, Chunk chunks[]);
+void fluid_system(Chunk chunks[], Chunk *chunk);
 
 // world chunks edit
 void add_chunk(Chunk chunks[], Vector2 pos);
@@ -165,6 +188,7 @@ int main()
 		.velocity = {0}
 	};
 	Vector2 playersize = {BLOCK_WIDTH-2, BLOCK_HEIGHT-2};
+	BlockType  SelectedBlock = WATER;
 
 	// ----------- game loop -------------------
 	while(!WindowShouldClose()){
@@ -189,6 +213,12 @@ int main()
 		if(IsKeyDown(KEY_A)){
 			player.velocity.x -= speed * dt;
 		}
+
+		if(IsKeyPressed(KEY_ONE))   SelectedBlock = WATER;
+		if(IsKeyPressed(KEY_TWO))   SelectedBlock = STONE;
+		if(IsKeyPressed(KEY_THREE)) SelectedBlock = LAVA;
+		if(IsKeyPressed(KEY_FOUR))  SelectedBlock = OBSIDIAN;
+		if(IsKeyPressed(KEY_FIVE))  SelectedBlock = COBBLESTONE;
 		
 
 		// --- update player position -------------
@@ -224,15 +254,20 @@ int main()
 
 		// ---- block placing -----------
 		if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)){
-			placeBlock(chunks, player.position, playersize, WATER);
+			placeBlock(chunks, player.position, playersize, SelectedBlock);
 		}
 
 		int playerChunkCoordX = chunk_coord(player.position.x);
-		for(int i = -CHUNK_DISTANCE; i <= CHUNK_DISTANCE; i++){
-			int chunkIdx = chunk_index(playerChunkCoordX + i);
+		static float update_timer = 0.0f;
+		update_timer += dt;
+		if(update_timer >= 0.0f){
+			update_timer = 0.0f;
+			for(int i = -CHUNK_DISTANCE; i <= CHUNK_DISTANCE; i++){
+				int chunkIdx = chunk_index(playerChunkCoordX + i);
 
-			if(chunkIdx < 0 || chunkIdx >= WORLD_SIZE) continue;
-			update_chunk(chunks, chunkIdx);
+				if(chunkIdx < 0 || chunkIdx >= WORLD_SIZE) continue;
+				fluid_system(chunks, &chunks[chunkIdx]);
+			}
 		}
 	
 		// ------------ clear and draw --------------------
@@ -260,7 +295,7 @@ int main()
 		timer += dt;
 		char coord[200];
 		if(timer >= 0.3f){
-			sprintf(coord, "X: %f | Y: %f", player.position.x, player.position.y);
+			sprintf(coord, "X: %.2f | Y: %.2f", (player.position.x/BLOCK_WIDTH), (player.position.y/BLOCK_HEIGHT));
 			timer = 0.0f;
 		}
 		DrawText(coord, 5, 35,15, WHITE);
@@ -294,7 +329,7 @@ void draw_chunk(Chunk* chunk)
 {
 	for(int y = 0; y < CHUNK_HEIGHT; y++){
 		for(int x = 0; x < CHUNK_WIDTH; x++){
-			int idx = x + (y * CHUNK_WIDTH);
+			int idx = getIndex(x,y);
 			bool isBreak = chunk->blocks[idx].isBreak;
 			BlockType type = chunk->blocks[idx].type;
 
@@ -346,9 +381,8 @@ void draw_chunk(Chunk* chunk)
 					break;
 			}
 			//--highlight hovered block ----
-			if(chunk->blocks[idx].isHover){
+			if(&chunk->blocks[idx] == hoveredBlock){
 				DrawRectangleLines(blockX - CAMERA.x, blockY - CAMERA.y, BLOCK_WIDTH, BLOCK_HEIGHT, BLACK);	
-				chunk->blocks[idx].isHover = false;
 			}
 
 			// If this specific block is currently being mined, draw a progress overlay
@@ -375,24 +409,30 @@ void init_chunk(Chunk* chunk)
         int waterCave = GetRandomValue(-5,5);
 
         for(int y = 0; y < CHUNK_HEIGHT; y++){
-            int idx = x + (y * CHUNK_WIDTH);
+            int idx = getIndex(x,y);
             float worldY = chunk->position.y + (y * BLOCK_HEIGHT);
 
             chunk->blocks[idx] = (Block){0};
             chunk->blocks[idx].isBreak = false;
-            chunk->blocks[idx].isHover = false;
+            chunk->blocks[idx].fluid_level = NONE;
+            chunk->blocks[idx].fluid_parent = (FluidParent){
+            	.chunkIdx = NONE,
+            	.x = NONE,
+            	.y = NONE
+            };
 
-            // 1. Bedrock at the bottom of the chunk (maximum positive Y)
+            // Bedrock at the bottom of the chunk (maximum positive Y)
             if(y == CHUNK_HEIGHT - 1 || worldY >= (chunk->position.y + (CHUNK_HEIGHT * BLOCK_HEIGHT) - (BLOCK_HEIGHT * GetRandomValue(1,3)))) {
                 chunk->blocks[idx].type = BEDROCK;
                 continue;
             }
 
-            // 2. Air or Water above the surface terrain height
+            //Air or Water above the surface terrain height
             if(worldY < surface) {
                 if(worldY >= waterLevel && surface > -40.0f) {
                     chunk->blocks[idx].type = WATER;
                     chunk->blocks[idx].isBreak = true;
+                    chunk->blocks[idx].fluid_level = 0;
                 } else {
                     chunk->blocks[idx].type = AIR;
                     chunk->blocks[idx].isBreak = true;
@@ -400,7 +440,7 @@ void init_chunk(Chunk* chunk)
                 continue;
             }
 
-            // 3. Underground Caves & Lava check
+            // Underground Caves & Lava check
             // Only carve caves if we are deep enough underground (e.g., 60 pixels below surface)
             bool carveCave = false;
             if(worldY > surface + 60.0f) {
@@ -420,9 +460,11 @@ void init_chunk(Chunk* chunk)
                 if (depthUnderground > 500.0f && randVal > 0.80f) {
                     chunk->blocks[idx].type = LAVA;
                     chunk->blocks[idx].isBreak = true;
+                    chunk->blocks[idx].fluid_level = 0;
                 } else if (depthUnderground > 250.0f && randVal > 0.60f) {
                     chunk->blocks[idx].type = WATER;
                     chunk->blocks[idx].isBreak = true;
+                    chunk->blocks[idx].fluid_level = 0;
                 } else{
                     chunk->blocks[idx].type = AIR;
                     chunk->blocks[idx].isBreak = true;
@@ -430,7 +472,7 @@ void init_chunk(Chunk* chunk)
                 continue;
             }
 
-            // 4. Surface & Underground Blocks (Grass, Stone, Ores)
+            //  Surface & Underground Blocks (Grass, Stone, Ores)
             if(worldY <= surface + (BLOCK_HEIGHT * 1)) {
                 chunk->blocks[idx].type = GRASS;
             } else {
@@ -455,7 +497,6 @@ void init_chunk(Chunk* chunk)
         }
     }
 }
-
 
 void init_world(Chunk chunks[], int size)
 {
@@ -487,6 +528,11 @@ int chunk_coord(float posX)
 	return (int)floorf(posX / (CHUNK_WIDTH * BLOCK_WIDTH));	
 }
 
+int getIndex(int x, int y)
+{
+	return x + (y * CHUNK_WIDTH);
+}
+
 bool player_collided(Chunk chunks[], Vector2 position, Vector2 size)
 {	
 	int playerChunkCoordX = chunk_coord(position.x);	
@@ -497,7 +543,7 @@ bool player_collided(Chunk chunks[], Vector2 position, Vector2 size)
 
 		for(int y = 0; y < CHUNK_HEIGHT; y++){
 			for(int x = 0; x < CHUNK_WIDTH; x++){
-				int idx = x + (y * CHUNK_WIDTH);
+				int idx = getIndex(x,y);
 
 				if(chunks[chunkIdx].blocks[idx].isBreak) continue;
 
@@ -579,7 +625,7 @@ int getRightChunkIndex(int chunkIdx)
 void placeBlockAt(Chunk chunks[], int blockChunkIdx, int targetX, int targetY, BlockType type, Vector2 playerPos, Vector2 playerSize)
 {
 	if(targetX >= 0 && targetX < CHUNK_WIDTH && targetY >= 0 && targetY < CHUNK_HEIGHT){
-		int targetIdx = targetX + (targetY * CHUNK_WIDTH);
+		int targetIdx = getIndex(targetX, targetY);
 
 		if(chunks[blockChunkIdx].blocks[targetIdx].isBreak){
 			Vector2 bpos = {
@@ -588,13 +634,33 @@ void placeBlockAt(Chunk chunks[], int blockChunkIdx, int targetX, int targetY, B
 			};
 			Vector2 bsize = {BLOCK_WIDTH, BLOCK_HEIGHT};
 
-			bool isBreak = false;
-			if(type == WATER || type == LAVA || type == AIR){
-				isBreak = true;
-			}
 			if(!AABB(playerPos, playerSize, bpos, bsize)){
-				chunks[blockChunkIdx].blocks[targetIdx].isBreak = isBreak;
-				chunks[blockChunkIdx].blocks[targetIdx].type = type;
+				if(isLiquid(type)){
+					BlockType targetBlock = chunks[blockChunkIdx].blocks[targetIdx].type;
+					if(isLiquid(targetBlock) && targetBlock != type){
+						if(WATER == targetBlock && LAVA == type){
+							chunks[blockChunkIdx].blocks[targetIdx].type = STONE;
+							chunks[blockChunkIdx].blocks[targetIdx].isBreak = false;
+							chunks[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
+							chunks[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						}else if(LAVA == targetBlock && WATER == type){
+							chunks[blockChunkIdx].blocks[targetIdx].type = OBSIDIAN;
+							chunks[blockChunkIdx].blocks[targetIdx].isBreak = false;
+							chunks[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
+							chunks[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						}
+					}else{
+						chunks[blockChunkIdx].blocks[targetIdx].type = type;
+						chunks[blockChunkIdx].blocks[targetIdx].isBreak = true;
+						chunks[blockChunkIdx].blocks[targetIdx].fluid_level = 0;
+						chunks[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+					}
+				}else{
+					chunks[blockChunkIdx].blocks[targetIdx].isBreak = false;
+					chunks[blockChunkIdx].blocks[targetIdx].type = type;
+					chunks[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
+					chunks[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+				}
 			}
 		}
 	}	
@@ -614,7 +680,7 @@ bool isBlockBreak(Chunk chunks[], int blockX, int blockY, int chunkIdx)
 
 	if(targetChunk < 0 || targetChunk >= WORLD_SIZE) return false;
 
-	int idx = blockX + (blockY * CHUNK_WIDTH);
+	int idx = getIndex(blockX, blockY);
 	return chunks[targetChunk].blocks[idx].isBreak;
 }
 
@@ -893,7 +959,6 @@ void findHoveredBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize)
 				Rectangle blockRect = {bpos.x, bpos.y, bsize.x, bsize.y};
 
 				if(rect_circle_collision(bpos, bsize, playerRay, RAY_RADIUS)){
-					chunks[rayChunkIdx].blocks[idx].isHover = true;
 					rayHitSomething = true;
 
 					hoveredBlock = &chunks[rayChunkIdx].blocks[idx];
@@ -964,7 +1029,8 @@ float noise(float X)
 
 // 2D Cave noise function
 // Connected, larger cave system using wave interference and smooth contours
-bool is_cave(float worldX, float worldY) {
+bool is_cave(float worldX, float worldY) 
+{
     // Only generate caves well below the surface layer
     // (assuming surface is around Y=0 or negative, and underground is positive Y)
     
@@ -986,335 +1052,329 @@ bool is_cave(float worldX, float worldY) {
     return (combined > -0.18f && combined < 0.18f);
 }
 
-//TODO: fix the instant/infinite block generation (check AABB)
-void update_chunk(Chunk chunks[], int chunkIdx)
+bool isLiquid(BlockType type)
 {
-	Chunk* chunk = &chunks[chunkIdx];
-	Vector2 pos = chunk->position;
+	if(WATER == type || LAVA == type){
+		return true;
+	}
+	return false;
+}
 
-	// if checked from top to bottom, when top's liquid goes step down, in next iteration it again gets checked and goes another step
-	//checking from bottom to top bypasses the second buffer approach
-	for(int y = CHUNK_HEIGHT-1; y >= 0; y--){
-		float Y = pos.y + (y * BLOCK_HEIGHT);
+bool hasParent(FluidParent parent)
+{
+	if(parent.chunkIdx != NONE && parent.x != NONE & parent.y != NONE){
+		return true;
+	}
+	return false;
+}
 
-		for(int x = 0; x < CHUNK_WIDTH; x++){
-			float X = pos.x + (x * BLOCK_WIDTH);
+bool isSource(Block block)
+{
+	if(!hasParent(block.fluid_parent) && block.fluid_level == 0){
+		return true;	
+	}
+	return false;
+}
 
+bool FindParent(Block block, Chunk chunks[])
+{
+	FluidParent parent = block.fluid_parent;
+
+	if(parent.chunkIdx < 0 || parent.chunkIdx >= WORLD_SIZE) return false;
+	Block parentBlock = chunks[parent.chunkIdx].blocks[getIndex(parent.x, parent.y)];
+		
+	if(parentBlock.type != block.type){
+		return false;
+	}
+	return true;
+}
+
+void fluid_system(Chunk chunks[], Chunk *chunk)
+{
+
+	int size = CHUNK_WIDTH * CHUNK_HEIGHT;
+	int chunkIdx = chunk_index(chunk_coord(chunk->position.x));
+	Block block_buffer[size];
+
+	for(int i = 0; i < size; i++){
+		block_buffer[i].fluid_level = chunk->blocks[i].fluid_level;
+		block_buffer[i].fluid_parent = chunk->blocks[i].fluid_parent;
+		block_buffer[i].type = chunk->blocks[i].type;
+		block_buffer[i].isBreak = chunk->blocks[i].isBreak;
+	}
+
+	for(int y = 0; y < CHUNK_HEIGHT; y++) {
+		for(int x = 0; x < CHUNK_WIDTH; x++) {
 			int idx = x + (y * CHUNK_WIDTH);
-			BlockType type = chunk->blocks[idx].type;
 
-			if(type == WATER || type == LAVA){
-				bool Moved = false;
+			Block block = chunk->blocks[idx];
+			int level = block.fluid_level;	
+			int fluid = block.type;
+			FluidParent parent = block.fluid_parent;
 
-				//Down
-				if(y < CHUNK_HEIGHT-1){
-					int down = y + 1;
-					int Didx = x + (down * CHUNK_WIDTH);
-					BlockType Dtype = chunk->blocks[Didx].type;
+			if(!isLiquid(fluid)) continue;
 
-					if(Dtype == AIR){
-						chunk->blocks[Didx].type = type;
-						Moved = true;
-					}else if(Dtype == type){
-						Moved = true;
-					}else{
-						if(type == WATER){
-							if(Dtype == LAVA){
-								chunk->blocks[Didx].type = OBSIDIAN;
-								chunk->blocks[Didx].isBreak = false;
-								Moved = true;
-							}
-						}
-						if(type == LAVA){
-							if(Dtype == WATER){
-								chunk->blocks[Didx].type = STONE;	
-								chunk->blocks[Didx].isBreak = false;
-								Moved = true;
-							}
-						}
-					}
+			if(!FindParent(block, chunks) && !isSource(block)){
+				//vanish
+				block_buffer[idx].type = AIR;
+				block_buffer[idx].fluid_level = NONE;
+				block_buffer[idx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+				block_buffer[idx].isBreak = true;
+				continue;
+			}
+
+			if(!hasParent(parent) && !isSource(block)){
+				//vanish
+				block_buffer[idx].type = AIR;
+				block_buffer[idx].fluid_level = NONE;
+				block_buffer[idx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+				block_buffer[idx].isBreak = true;
+				continue;
+			}
+
+			//Down
+			int down  = y + 1;
+			if(down < CHUNK_HEIGHT){
+				int downIdx = getIndex(x, down);
+				Block down = chunk->blocks[downIdx];
+
+				if(AIR == down.type){
+					block_buffer[downIdx].type = fluid;
+					block_buffer[downIdx].fluid_level  = level;
+					block_buffer[downIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+					continue;
 				}
-
-				//if not skip after a downward flow, it will fill the world instantly
-				if(Moved) continue;
-
-				bool go_right = false;	
-				if (y < CHUNK_HEIGHT-1){
-					int R = x + 1;
-					int D = y + 1;
-
-					if(R >= CHUNK_WIDTH){
-						R -= CHUNK_WIDTH;	
-						int DRidx = R + (D * CHUNK_WIDTH);
-						int Ridx = R + (y * CHUNK_WIDTH);
-
-						int rightChunkIdx = getRightChunkIndex(chunkIdx);
-						if(rightChunkIdx >= 0  && rightChunkIdx < WORLD_SIZE){
-
-							BlockType DRtype = chunks[rightChunkIdx].blocks[DRidx].type;
-							BlockType Rtype = chunks[rightChunkIdx].blocks[Ridx].type;
-
-							if(Rtype == AIR){
-								if(DRtype == AIR){
-									go_right = true;
-								}
-							}
+				if(isLiquid(down.type)){
+					if(WATER == fluid){
+						if(LAVA == down.type){
+							block_buffer[downIdx].type    = OBSIDIAN;
+							block_buffer[downIdx].isBreak = false;
+							block_buffer[downIdx].fluid_level  = NONE;
+							block_buffer[downIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 						}
-					}else{
-						int DRidx = R + (D * CHUNK_WIDTH);
-						int Ridx = R + (y * CHUNK_WIDTH);
-
-						BlockType DRtype = chunk->blocks[DRidx].type;
-						BlockType Rtype = chunk->blocks[Ridx].type;
-
-						if(Rtype == AIR){
-							if(DRtype == AIR){
-								go_right = true;
-							}
+					}else if(LAVA == fluid){
+						if(WATER == down.type){
+							block_buffer[downIdx].type    = STONE;
+							block_buffer[downIdx].isBreak = false;
+							block_buffer[downIdx].fluid_level  = NONE;
+							block_buffer[downIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 						}
 					}
+				continue;
 				}
+			}
 
-				bool go_left = false;	
-				if (y < CHUNK_HEIGHT-1){
-					int L = x - 1;
-					int D = y + 1;
+			//Find flow direction
+			bool FlowLeft = false;
+			bool FlowRight = false;
 
-					if(L < 0){
-						L += CHUNK_WIDTH;
-						int DLidx = L + (D * CHUNK_WIDTH);
-						int Lidx = L + (y * CHUNK_WIDTH);
+			//down-left
+			int left = x - 1;
+			int leftChunkIdx = chunkIdx;
 
-						int leftChunkIdx = getLeftChunkIndex(chunkIdx);
-						if(leftChunkIdx >= 0 && leftChunkIdx < WORLD_SIZE){
+			if(left < 0){
+				left += CHUNK_WIDTH;
+				leftChunkIdx = getLeftChunkIndex(chunkIdx);
+			}
 
-							BlockType DLtype = chunks[leftChunkIdx].blocks[DLidx].type;	
-							BlockType Ltype = chunks[leftChunkIdx].blocks[Lidx].type;	
+			if(down < CHUNK_HEIGHT){
+				if(leftChunkIdx >= 0 && leftChunkIdx < WORLD_SIZE){
+					int downLeft = left + (down * CHUNK_WIDTH);
+					int leftIdx =  left + (y * CHUNK_WIDTH);
 
-							if(Ltype == AIR){
-								if(DLtype == AIR){
-									go_left = true;
-								}
-							}
-						}
-					}else{
-						int DLidx = L + (D * CHUNK_WIDTH);
-						int Lidx = L + (y * CHUNK_WIDTH);
-
-						BlockType DLtype = chunk->blocks[DLidx].type;
-						BlockType Ltype = chunk->blocks[Lidx].type;
-
-						if(Ltype == AIR){
-							if(DLtype == AIR){
-								go_left = true;
-							}
-						}
-					}
-				}
-
-				if(true == go_right  && false == go_left){
-					//Right
-					int right = x + 1;
-					if(right >= CHUNK_WIDTH){
-						right -= CHUNK_WIDTH;
-						int Ridx = right + (y * CHUNK_WIDTH);
-
-						int rightChunkIdx = getRightChunkIndex(chunkIdx);
-						if(rightChunkIdx >= 0 && rightChunkIdx < WORLD_SIZE){
-
-							BlockType Rtype = chunks[rightChunkIdx].blocks[Ridx].type;
-
-							if(Rtype == AIR){
-								chunks[rightChunkIdx].blocks[Ridx].type = type;
+					if(chunks[leftChunkIdx].blocks[downLeft].isBreak && chunks[leftChunkIdx].blocks[leftIdx].isBreak){
+						if(isLiquid(chunks[leftChunkIdx].blocks[downLeft].type)){
+							if(fluid == chunks[leftChunkIdx].blocks[downLeft].type){
+								FlowLeft = true;
 							}else{
-								if(type == WATER){
-									if(Rtype == LAVA){
-										chunks[rightChunkIdx].blocks[Ridx].type = COBBLESTONE;
-										chunks[rightChunkIdx].blocks[Ridx].isBreak = false;
-									}
-								}
-								if(type == LAVA){
-									if(Rtype == WATER){
-										chunks[rightChunkIdx].blocks[Ridx].type = COBBLESTONE;
-										chunks[rightChunkIdx].blocks[Ridx].isBreak = false;
-									}
-								}
+								FlowLeft = true;
+								level += 2; //to preven turning whole ocean floor into stone (lava->water)
 							}
-						}
-					}else{
-						int Ridx = right + (y * CHUNK_WIDTH);
-						BlockType Rtype = chunk->blocks[Ridx].type;
-
-						if(Rtype == AIR){
-							chunk->blocks[Ridx].type = type;
 						}else{
-							if(type == WATER){
-								if(Rtype == LAVA){
-									chunk->blocks[Ridx].type = COBBLESTONE;
-									chunk->blocks[Ridx].isBreak = false;
-								}
-							}
-							if(type == LAVA){
-								if(Rtype == WATER){
-									chunk->blocks[Ridx].type = COBBLESTONE;
-									chunk->blocks[Ridx].isBreak = false;
-								}
-							}
-						}
-					}
-				}else if(true == go_left && false == go_right){
-					//Left	
-					int left = x - 1;
-					if(left < 0){
-						left += CHUNK_WIDTH;
-						int Lidx = left + (y * CHUNK_WIDTH);
-
-						int leftChunkIdx = getLeftChunkIndex(chunkIdx);
-						if(leftChunkIdx >= 0 && leftChunkIdx < WORLD_SIZE){
-
-							BlockType Ltype = chunks[leftChunkIdx].blocks[Lidx].type;
-
-							if(Ltype == AIR){
-								chunks[leftChunkIdx].blocks[Lidx].type = type;
-							}else{
-								if(type == WATER){
-									if(Ltype == LAVA){
-										chunks[leftChunkIdx].blocks[Lidx].type = COBBLESTONE;
-										chunks[leftChunkIdx].blocks[Lidx].isBreak = false;
-									}
-								}
-								if(type == LAVA){
-									if(Ltype == WATER){
-										chunks[leftChunkIdx].blocks[Lidx].type = COBBLESTONE;
-										chunks[leftChunkIdx].blocks[Lidx].isBreak = false;
-									}
-								}
-							}
-						}
-					}else{
-						int Lidx = left + (y * CHUNK_WIDTH);
-						BlockType Ltype = chunk->blocks[Lidx].type;
-
-						if(Ltype == AIR){
-							chunk->blocks[Lidx].type = type;
-						}else{
-							if(type == WATER){
-								if(Ltype == LAVA){
-									chunk->blocks[Lidx].type = COBBLESTONE;
-									chunk->blocks[Lidx].isBreak = false;
-								}
-							}
-							if(type == LAVA){
-								if(Ltype == WATER){
-									chunk->blocks[Lidx].type = COBBLESTONE;
-									chunk->blocks[Lidx].isBreak = false;
-								}
-							}
-						}
-					}
-				}else{
-					//Right
-					int right = x + 1;
-					if(right >= CHUNK_WIDTH){
-						right -= CHUNK_WIDTH;
-						int Ridx = right + (y * CHUNK_WIDTH);
-
-						int rightChunkIdx = getRightChunkIndex(chunkIdx);
-						if(rightChunkIdx >= 0 && rightChunkIdx < WORLD_SIZE){
-
-							BlockType Rtype = chunks[rightChunkIdx].blocks[Ridx].type;
-
-							if(Rtype == AIR){
-								chunks[rightChunkIdx].blocks[Ridx].type = type;
-							}else{
-								if(type == WATER){
-									if(Rtype == LAVA){
-										chunks[rightChunkIdx].blocks[Ridx].type = COBBLESTONE;
-										chunks[rightChunkIdx].blocks[Ridx].isBreak = false;
-									}
-								}
-								if(type == LAVA){
-									if(Rtype == WATER){
-										chunks[rightChunkIdx].blocks[Ridx].type = COBBLESTONE;
-										chunks[rightChunkIdx].blocks[Ridx].isBreak = false;
-									}
-								}
-							}
-						}
-					}else{
-						int Ridx = right + (y * CHUNK_WIDTH);
-						BlockType Rtype = chunk->blocks[Ridx].type;
-
-						if(Rtype == AIR){
-							chunk->blocks[Ridx].type = type;
-						}else{
-							if(type == WATER){
-								if(Rtype == LAVA){
-									chunk->blocks[Ridx].type = COBBLESTONE;
-									chunk->blocks[Ridx].isBreak = false;
-								}
-							}
-							if(type == LAVA){
-								if(Rtype == WATER){
-									chunk->blocks[Ridx].type = COBBLESTONE;
-									chunk->blocks[Ridx].isBreak = false;
-								}
-							}
-						}
-					}
-
-					//Left	
-					int left = x - 1;
-					if(left < 0){
-						left += CHUNK_WIDTH;
-						int Lidx = left + (y * CHUNK_WIDTH);
-
-						int leftChunkIdx = getLeftChunkIndex(chunkIdx);
-						if(leftChunkIdx >= 0 && leftChunkIdx < WORLD_SIZE){
-
-							BlockType Ltype = chunks[leftChunkIdx].blocks[Lidx].type;
-
-							if(Ltype == AIR){
-								chunks[leftChunkIdx].blocks[Lidx].type = type;
-							}else{
-								if(type == WATER){
-									if(Ltype == LAVA){
-										chunks[leftChunkIdx].blocks[Lidx].type = COBBLESTONE;
-										chunks[leftChunkIdx].blocks[Lidx].isBreak = false;
-									}
-								}
-								if(type == LAVA){
-									if(Ltype == WATER){
-										chunks[leftChunkIdx].blocks[Lidx].type = COBBLESTONE;
-										chunks[leftChunkIdx].blocks[Lidx].isBreak = false;
-									}
-								}
-							}
-						}
-					}else{
-						int Lidx = left + (y * CHUNK_WIDTH);
-						BlockType Ltype = chunk->blocks[Lidx].type;
-
-						if(Ltype == AIR){
-							chunk->blocks[Lidx].type = type;
-						}else{
-							if(type == WATER){
-								if(Ltype == LAVA){
-									chunk->blocks[Lidx].type = COBBLESTONE;
-									chunk->blocks[Lidx].isBreak = false;
-								}
-							}
-							if(type == LAVA){
-								if(Ltype == WATER){
-									chunk->blocks[Lidx].type = COBBLESTONE;
-									chunk->blocks[Lidx].isBreak = false;
-								}
-							}
+							FlowLeft = true;
 						}
 					}
 				}
 			}
+
+			//down-right
+			int right = x + 1;
+			int rightChunkIdx = chunkIdx;
+
+			if(right >= CHUNK_WIDTH){
+				right -= CHUNK_WIDTH;
+				rightChunkIdx = getRightChunkIndex(chunkIdx);
+			}
+
+			if(down < CHUNK_HEIGHT){
+				if(rightChunkIdx >= 0 && rightChunkIdx < WORLD_SIZE){
+					int downRight = right + (down * CHUNK_WIDTH);
+					int rightIdx = right + (y * CHUNK_WIDTH);
+
+					if(chunks[rightChunkIdx].blocks[downRight].isBreak && chunks[rightChunkIdx].blocks[rightIdx].isBreak){
+						if(isLiquid(chunks[rightChunkIdx].blocks[downRight].type)){
+							if(chunks[rightChunkIdx].blocks[downRight].type == fluid){
+								FlowRight = true;
+							}else{
+								FlowRight = true;
+								level += 2;
+							}
+						}else{
+							FlowRight = true;
+						}
+					}
+				}
+			}
+
+			if(level >= MAX_FLUID_LEVEL) continue;
+
+			//Flow left
+			if(FlowLeft){
+				int leftIdx      = left + (y * CHUNK_WIDTH);
+				int downLeftIdx  = left + (down * CHUNK_WIDTH);
+
+				Block blockLeft = chunks[leftChunkIdx].blocks[leftIdx];
+				Block blockDownLeft = chunks[leftChunkIdx].blocks[downLeftIdx];
+
+				if(AIR == blockLeft.type){
+					if(leftChunkIdx == chunkIdx){
+						block_buffer[leftIdx].type = fluid;
+						block_buffer[leftIdx].fluid_level = level;
+						block_buffer[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						block_buffer[leftIdx].isBreak = true;
+					}else{
+						chunks[leftChunkIdx].blocks[leftIdx].type = fluid;
+						chunks[leftChunkIdx].blocks[leftIdx].fluid_level = level;
+						chunks[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						chunks[leftChunkIdx].blocks[leftIdx].isBreak = true;
+					}
+				}else if(isLiquid(blockLeft.type) && fluid != blockLeft.type){
+					if(leftChunkIdx == chunkIdx){
+						block_buffer[leftIdx].type = COBBLESTONE;
+						block_buffer[leftIdx].fluid_level = NONE;
+						block_buffer[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						block_buffer[leftIdx].isBreak = false;
+					}else{
+						chunks[leftChunkIdx].blocks[leftIdx].type = COBBLESTONE;
+						chunks[leftChunkIdx].blocks[leftIdx].fluid_level = NONE;
+						chunks[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						chunks[leftChunkIdx].blocks[leftIdx].isBreak = false;
+					}
+				}
+			}
+			//Flow right
+			if(FlowRight){
+				int rightIdx      = right + (y * CHUNK_WIDTH);
+				int downRightIdx  = right + (down * CHUNK_WIDTH);
+
+				Block blockRight     = chunks[rightChunkIdx].blocks[rightIdx];
+				Block blockDownRight = chunks[rightChunkIdx].blocks[downRightIdx];
+
+				if(AIR == blockRight.type){
+					if(rightChunkIdx == chunkIdx){
+						block_buffer[rightIdx].type = fluid;
+						block_buffer[rightIdx].fluid_level = level;
+						block_buffer[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						block_buffer[rightIdx].isBreak = true;
+					}else{
+						chunks[rightChunkIdx].blocks[rightIdx].type = fluid;
+						chunks[rightChunkIdx].blocks[rightIdx].fluid_level = level;
+						chunks[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						chunks[rightChunkIdx].blocks[rightIdx].isBreak = true;
+					}
+				}else if(isLiquid(blockRight.type) && fluid != blockRight.type){
+					if(rightChunkIdx == chunkIdx){
+						block_buffer[rightIdx].type = COBBLESTONE;
+						block_buffer[rightIdx].fluid_level = NONE;
+						block_buffer[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						block_buffer[rightIdx].isBreak = false;
+					}else{
+						chunks[rightChunkIdx].blocks[rightIdx].type = COBBLESTONE;
+						chunks[rightChunkIdx].blocks[rightIdx].fluid_level = NONE;
+						chunks[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						chunks[rightChunkIdx].blocks[rightIdx].isBreak = false;
+					}
+				}
+			}
+
+			if(FlowLeft || FlowRight) continue;
+
+			if(level >= MAX_FLUID_LEVEL) continue;
+
+			//normal left
+			if(leftChunkIdx  >= 0 && leftChunkIdx < WORLD_SIZE){
+
+				int leftIdx = left + (y * CHUNK_WIDTH);
+				Block leftBlock = chunks[leftChunkIdx].blocks[leftIdx];
+
+				if(AIR == leftBlock.type){
+					if(leftChunkIdx == chunkIdx){
+						block_buffer[leftIdx].type = fluid;
+						block_buffer[leftIdx].fluid_level = level + 1 > MAX_FLUID_LEVEL ?  MAX_FLUID_LEVEL : level + 1;
+						block_buffer[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						block_buffer[leftIdx].isBreak = true;
+					}else{
+						chunks[leftChunkIdx].blocks[leftIdx].type = fluid;
+						block_buffer[leftIdx].fluid_level = level + 1 > MAX_FLUID_LEVEL ?  MAX_FLUID_LEVEL : level + 1;
+						chunks[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						chunks[leftChunkIdx].blocks[leftIdx].isBreak = true;
+					}	
+				}else if(isLiquid(leftBlock.type) && leftBlock.type != fluid){
+					if(leftChunkIdx == chunkIdx){
+						block_buffer[leftIdx].type = fluid;
+						block_buffer[leftIdx].fluid_level = NONE;
+						block_buffer[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						block_buffer[leftIdx].isBreak = false;
+					}else{
+						chunks[leftChunkIdx].blocks[leftIdx].type = fluid;
+						chunks[leftChunkIdx].blocks[leftIdx].fluid_level = NONE;
+						chunks[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						chunks[leftChunkIdx].blocks[leftIdx].isBreak = false;
+					}	
+				}
+			}
+
+			//normal right
+			if(rightChunkIdx >= 0 && rightChunkIdx < WORLD_SIZE){
+
+				int rightIdx = right + (y * CHUNK_WIDTH);
+				Block rightBlock = chunks[rightChunkIdx].blocks[rightIdx];
+
+				if(AIR == rightBlock.type){
+					if(rightChunkIdx == chunkIdx){
+						block_buffer[rightIdx].type = fluid;
+						block_buffer[rightIdx].fluid_level = level + 1;
+						block_buffer[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						block_buffer[rightIdx].isBreak = true;
+					}else{
+						chunks[rightChunkIdx].blocks[rightIdx].type = fluid;
+						chunks[rightChunkIdx].blocks[rightIdx].fluid_level = level + 1;
+						chunks[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						chunks[rightChunkIdx].blocks[rightIdx].isBreak = true;
+					}	
+				}else if(isLiquid(rightBlock.type) && rightBlock.type != fluid){
+					if(rightChunkIdx == chunkIdx){
+						block_buffer[rightIdx].type = COBBLESTONE;
+						block_buffer[rightIdx].fluid_level = NONE;
+						block_buffer[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						block_buffer[rightIdx].isBreak = false;
+					}else{
+						chunks[rightChunkIdx].blocks[rightIdx].type = COBBLESTONE;
+						chunks[rightChunkIdx].blocks[rightIdx].fluid_level = NONE;
+						chunks[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						chunks[rightChunkIdx].blocks[rightIdx].isBreak = false;
+					}	
+				}
+			}
 		}
+	}
+
+	// update 
+	for(int i = 0; i < size; i++){
+		chunk->blocks[i].fluid_level  = block_buffer[i].fluid_level;
+		chunk->blocks[i].fluid_parent = block_buffer[i].fluid_parent;
+		chunk->blocks[i].type         = block_buffer[i].type;
+		chunk->blocks[i].isBreak      = block_buffer[i].isBreak; 
 	}
 }
 
