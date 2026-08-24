@@ -6,25 +6,28 @@
 
 // ------------ TODO -------------
 // -> Make the world infinite
-// -> [?] collision (check directly based on index, instead of all neighbouring chunk (100 * 20 * 3 checks ?))
-// -> Player physics (movement, jump)
-// -> Item drop 
-// -> Gameplay physics (collect, pick items)
+// -> Gameplay physics (pick, drop items, game mode)
 
-#define WIDTH  800
-#define HEIGHT 600
+// #define WIDTH  800
+// #define HEIGHT 600
+
+static int WINDOW_WIDTH  = 800;
+static int WINDOW_HEIGHT = 600;
 
 // --- macros ----
 #define MAX(x,y) (x > y ? x : y)
 #define MIN(x,y) (x < y ? x : y)
 #define NONE -1
 
-// ---- Global Constants-------------
+// ---- Global Constants -------------
 #define BLOCK_WIDTH 30
 #define BLOCK_HEIGHT 30
 
-#define  CHUNK_WIDTH 20
-#define  CHUNK_HEIGHT 100
+// static int BLOCK_WIDTH  = 30;
+// static int BLOCK_HEIGHT = 30;
+
+#define  CHUNK_WIDTH 16
+#define  CHUNK_HEIGHT 64
 
 #define CHUNK_DISTANCE 1 //chunk one both sides (not including current)
 
@@ -32,10 +35,11 @@
 #define RAY_STEP 10 
 #define RAY_RADIUS 5.0f
 
-#define GRAVITY 300.0f
-#define WATER_FLAT_DIST 4 //blocks
-
 #define MAX_FLUID_LEVEL 7
+
+#define GRAVITY 500.0f
+#define MOVE_SPEED 150.0f
+#define JUMP_FORCE 200.0f
 
 #define WORLD_SIZE 30
 
@@ -85,6 +89,7 @@ typedef struct{
 typedef struct{
 	Vector2 position;
 	Vector2 velocity;
+	bool isInGround;
 }Player;
 
 typedef struct{
@@ -133,6 +138,7 @@ float smooth_noise(float x);
 float terrain_noise(float X); 
 bool is_cave(float worldX, float worldY);
 
+bool isSolid(Chunk chunks[], float worldX, float worldY);
 bool isLiquid(BlockType type);
 bool hasParent(FluidParent parent);
 bool FindParent(Block block, Chunk chunks[]);
@@ -141,12 +147,21 @@ void fluid_system(Chunk chunks[], Chunk *chunk);
 // world chunks edit
 void add_chunk(Chunk chunks[], Vector2 pos);
 
+float snapToBlockRight(float worldX);
+float snapToBlockLeft(float worldX);
+float snapToBlockTop(float worldY);
+float snapToBlockBottom(float worldY);
+void updatePlayer(Player* player, Vector2 playerSize, Chunk chunks[], float dt);
+
 // collision function
 bool player_collided(Chunk chunks[], Vector2 position, Vector2 size);
 
 bool AABB(Vector2 posA, Vector2 sizeA, Vector2 posB, Vector2 sizeB);
 bool rect_circle_collision(Vector2 rectPos, Vector2 rectSize, Vector2 circlePos, float circleRadius);
 bool point_rect_collision(Vector2 point, Vector2 rectPos, Vector2 rectSize);
+
+void load_texture();
+void unload_texture();
 
 // ------------ textures ------------------
 Texture2D grassBlock;
@@ -165,80 +180,46 @@ Texture2D Obsidian;
 int main()
 {
 	// ------ initialize ----------
-	InitWindow(WIDTH, HEIGHT, "Minecraft 2D");
+	SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+	InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Minecraft 2D");
 	SetTargetFPS(60);
-	grassBlock = LoadTexture("Textures/GrassBlock.png");
-	stoneBlock = LoadTexture("Textures/StoneBlock.png");
-	steve      = LoadTexture("Textures/steve.png");
-	bedRock    = LoadTexture("Textures/BedRock.png");
-	waterBlock = LoadTexture("Textures/WaterBlock.png");
-	lavaBlock  = LoadTexture("Textures/LavaBlock.png");
-	diamondOre = LoadTexture("Textures/DiamondOre.png");
-	ironOre    = LoadTexture("Textures/IronOre.png");
-	emeraldOre = LoadTexture("Textures/EmeraldOre.png");
-	goldOre    = LoadTexture("Textures/GoldOre.png");
-	cobbleStone = LoadTexture("Textures/CobleStone.png");
-	Obsidian = LoadTexture("Textures/Obsidian.png");
+
+	load_texture();
+	updateTexture();
 
 	Chunk chunks[WORLD_SIZE];
 	init_world(chunks, WORLD_SIZE);
 
 	Player player = {
 		.position = (Vector2){0, -50},
-		.velocity = {0}
+		.velocity = {0},
+		.isInGround = false
 	};
-	Vector2 playersize = {BLOCK_WIDTH-2, BLOCK_HEIGHT-2};
+	Vector2 playersize = {BLOCK_WIDTH-2, steve.height-2};
 	BlockType  SelectedBlock = WATER;
 
 	// ----------- game loop -------------------
 	while(!WindowShouldClose()){
 		// ------------------ update -------------------
 		float dt = GetFrameTime();
-		float speed = 200;
-		float damping = 0.99f;
-		player.velocity.y += GRAVITY * dt;
-		player.velocity.x *= damping;
-		player.velocity.y *= damping;
-
-
-		if(IsKeyPressed(KEY_SPACE)){
-			player.velocity.y -= ((GRAVITY/2)+40)*100* dt;
-		}
-		if(IsKeyDown(KEY_S)){
-			player.velocity.y += speed * dt;
-		}
-		if(IsKeyDown(KEY_D)){
-			player.velocity.x += speed * dt;
-		}
-		if(IsKeyDown(KEY_A)){
-			player.velocity.x -= speed * dt;
-		}
+		
+		updatePlayer(&player, playersize, chunks, dt);
 
 		if(IsKeyPressed(KEY_ONE))   SelectedBlock = WATER;
 		if(IsKeyPressed(KEY_TWO))   SelectedBlock = STONE;
 		if(IsKeyPressed(KEY_THREE)) SelectedBlock = LAVA;
 		if(IsKeyPressed(KEY_FOUR))  SelectedBlock = OBSIDIAN;
 		if(IsKeyPressed(KEY_FIVE))  SelectedBlock = COBBLESTONE;
-		
 
-		// --- update player position -------------
-		player.position.x += player.velocity.x * dt;
-		if(player_collided(chunks, player.position, playersize)){	
-			player.position.x -= player.velocity.x * dt;
-			player.velocity.x = 0;
-		}
-		player.position.y += player.velocity.y * dt;
-		if(player_collided(chunks, player.position, playersize)){	
-			player.position.y -= player.velocity.y * dt;
-			player.velocity.y = 0;
-		}
-		if(player_collided(chunks, player.position, playersize)){
-			player.position.y -= speed * dt;
+		// -- look for window resize ----
+		if(IsWindowResized()){
+			WINDOW_WIDTH = GetRenderWidth();
+			WINDOW_HEIGHT = GetRenderHeight();
 		}
 
 		// --- update camera (centered around player) --------------
-		CAMERA.x = player.position.x - (WIDTH/2);
-		CAMERA.y = player.position.y - (HEIGHT/2);
+		CAMERA.x = player.position.x - (WINDOW_WIDTH/2);
+		CAMERA.y = player.position.y - (WINDOW_HEIGHT/2);
 
 		// ------------ update chunks ---------------
 		//--- ray casting ---------
@@ -260,7 +241,7 @@ int main()
 		int playerChunkCoordX = chunk_coord(player.position.x);
 		static float update_timer = 0.0f;
 		update_timer += dt;
-		if(update_timer >= 0.0f){
+		if(update_timer >= 0.2f){
 			update_timer = 0.0f;
 			for(int i = -CHUNK_DISTANCE; i <= CHUNK_DISTANCE; i++){
 				int chunkIdx = chunk_index(playerChunkCoordX + i);
@@ -293,7 +274,7 @@ int main()
 		DrawTexture(steve, player.position.x-CAMERA.x, player.position.y-CAMERA.y, WHITE);
 		static float timer = 0.0f;
 		timer += dt;
-		char coord[200];
+		char coord[100];
 		if(timer >= 0.3f){
 			sprintf(coord, "X: %.2f | Y: %.2f", (player.position.x/BLOCK_WIDTH), (player.position.y/BLOCK_HEIGHT));
 			timer = 0.0f;
@@ -304,22 +285,91 @@ int main()
 	}
 
 	// -------- close everything ------------------
-	UnloadTexture(grassBlock);
-	UnloadTexture(stoneBlock);
-	UnloadTexture(steve);
-	UnloadTexture(bedRock);
-	UnloadTexture(waterBlock);
-	UnloadTexture(lavaBlock);
-	UnloadTexture(ironOre);
-	UnloadTexture(goldOre);
-	UnloadTexture(emeraldOre);
-	UnloadTexture(diamondOre);
-	UnloadTexture(cobbleStone);
-	UnloadTexture(Obsidian);
+	unload_texture();
 	CloseWindow();
 	return 0;
 }
 /// ------------------- function definition --------------------
+
+float snapToBlockLeft(float worldX)
+{
+	return floorf(worldX / BLOCK_WIDTH) * BLOCK_WIDTH;
+}
+
+float snapToBlockRight(float worldX)
+{
+	return (floorf(worldX / BLOCK_WIDTH) + 1) * BLOCK_WIDTH;
+}
+
+float snapToBlockTop(float worldY)
+{
+	return floorf(worldY / BLOCK_HEIGHT) * BLOCK_HEIGHT;
+}
+
+float snapToBlockBottom(float worldY)
+{
+	return (floorf(worldY / BLOCK_HEIGHT) + 1) * BLOCK_HEIGHT;
+}
+
+void updatePlayer(Player* player, Vector2 playerSize, Chunk chunks[], float dt)
+{
+	player->velocity.x = 0;
+	player->velocity.y += GRAVITY * dt;
+
+	if(IsKeyDown(KEY_D)){
+		player->velocity.x = MOVE_SPEED;
+	}
+	if(IsKeyDown(KEY_A)){
+		player->velocity.x = -MOVE_SPEED;
+	}
+
+	if((IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_W)) && player->isInGround){
+		player->velocity.y = -JUMP_FORCE;
+		player->isInGround = false;
+	}
+
+	// --- update player position -------------
+	player->position.x += player->velocity.x * dt;
+	Vector2 pos = player->position;
+
+	if(player->velocity.x > 0){//going right
+		if (isSolid(chunks, pos.x + playerSize.x, pos.y) ||
+			isSolid(chunks, pos.x + playerSize.x, pos.y + playerSize.y - 1)){
+
+			player->position.x = snapToBlockLeft(pos.x + playerSize.x) - playerSize.x;
+			player->velocity.x = 0;
+		}
+	}else if(player->velocity.x < 0){//going left
+		if (isSolid(chunks, pos.x, pos.y) ||
+			isSolid(chunks, pos.x, pos.y + playerSize.y - 1)){
+
+			player->position.x = snapToBlockRight(pos.x);
+			player->velocity.x = 0;
+		}
+	}
+	
+	player->position.y += player->velocity.y * dt;
+	pos = player->position;
+	player->isInGround = false;
+
+	if(player->velocity.y > 0){ //going down
+		if (isSolid(chunks, pos.x, pos.y + playerSize.y) || 
+			isSolid(chunks, pos.x + playerSize.x - 1, pos.y + playerSize.y)){
+
+			player->position.y = snapToBlockTop(pos.y + playerSize.y) - playerSize.y;
+			player->velocity.y = 0;
+			player->isInGround = true;
+		}
+	}else if(player->velocity.y < 0){//jumping up
+		if (isSolid(chunks, pos.x, pos.y) || 
+			isSolid(chunks, pos.x + playerSize.x - 1, pos.y)){
+
+			player->position.y = snapToBlockBottom(pos.y);
+			player->velocity.y = 0;
+		}
+	}
+}
+
 void InitializeWorldSeed()
 {
     worldSeedOffset = (float)GetRandomValue(-100000, 100000); 
@@ -532,6 +582,40 @@ int getIndex(int x, int y)
 {
 	return x + (y * CHUNK_WIDTH);
 }
+
+void load_texture()
+{
+	grassBlock = LoadTexture("Textures/GrassBlock.png");
+	stoneBlock = LoadTexture("Textures/StoneBlock.png");
+	steve      = LoadTexture("Textures/steve.png");
+	bedRock    = LoadTexture("Textures/BedRock.png");
+	waterBlock = LoadTexture("Textures/WaterBlock.png");
+	lavaBlock  = LoadTexture("Textures/LavaBlock.png");
+	diamondOre = LoadTexture("Textures/DiamondOre.png");
+	ironOre    = LoadTexture("Textures/IronOre.png");
+	emeraldOre = LoadTexture("Textures/EmeraldOre.png");
+	goldOre    = LoadTexture("Textures/GoldOre.png");
+	cobbleStone = LoadTexture("Textures/CobleStone.png");
+	Obsidian = LoadTexture("Textures/Obsidian.png");
+}
+
+void unload_texture()
+{
+	UnloadTexture(grassBlock);
+	UnloadTexture(stoneBlock);
+	UnloadTexture(steve);
+	UnloadTexture(bedRock);
+	UnloadTexture(waterBlock);
+	UnloadTexture(lavaBlock);
+	UnloadTexture(ironOre);
+	UnloadTexture(goldOre);
+	UnloadTexture(emeraldOre);
+	UnloadTexture(diamondOre);
+	UnloadTexture(cobbleStone);
+	UnloadTexture(Obsidian);
+
+}
+
 
 bool player_collided(Chunk chunks[], Vector2 position, Vector2 size)
 {	
@@ -1052,6 +1136,27 @@ bool is_cave(float worldX, float worldY)
     return (combined > -0.18f && combined < 0.18f);
 }
 
+bool isSolid(Chunk chunks[], float worldX, float worldY)
+{
+	int chunkIdx = chunk_index(chunk_coord(worldX));
+
+	if(chunkIdx < 0 || chunkIdx >= WORLD_SIZE) return false;
+
+	int localX = (int)(worldX - chunks[chunkIdx].position.x) / BLOCK_WIDTH;
+	int localY = (int)(worldY - chunks[chunkIdx].position.y) / BLOCK_HEIGHT;
+
+	if(localX < 0 || localX >= CHUNK_WIDTH) return false;
+	if(localY < 0 || localY >= CHUNK_HEIGHT) return false;
+
+	Block target = chunks[chunkIdx].blocks[getIndex(localX, localY)];
+
+	if(AIR == target.type || WATER == target.type || LAVA == target.type){
+		return false;
+	}
+
+	return true;
+}
+
 bool isLiquid(BlockType type)
 {
 	if(WATER == type || LAVA == type){
@@ -1131,6 +1236,7 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 				block_buffer[idx].isBreak = true;
 				continue;
 			}
+
 
 			//Down
 			int down  = y + 1;
