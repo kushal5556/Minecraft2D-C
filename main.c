@@ -11,16 +11,6 @@ static int WINDOW_WIDTH  = 800;
 static int WINDOW_HEIGHT = 600;
 
 // --- macros ----
-#define da_append(array, item)\
-	do{\
-		if((array).size >= (array).capacity){\
-			(array).capacity = (array).capacity == 0 ? 10 : (array).capacity * 2;\
-			(array).items = realloc((array).items, sizeof(*(array).items) * (array).capacity);\
-			if(NULL == (array).items){perror("[ERROR]: Falied to Realloc\n"); exit(1);}\
-		}\
-		(array).items[(array).size++] = item;\
-	}while(0)
-
 #define MAX(x,y) (x > y ? x : y)
 #define MIN(x,y) (x < y ? x : y)
 #define NONE -1
@@ -29,7 +19,7 @@ static int WINDOW_HEIGHT = 600;
 #define BLOCK_WIDTH 30
 #define BLOCK_HEIGHT 30
 
-#define  CHUNK_WIDTH 16
+#define  CHUNK_WIDTH 20
 #define  CHUNK_HEIGHT 64
 
 #define CHUNK_DISTANCE 1 //chunk one both sides (not including current)
@@ -63,7 +53,9 @@ typedef enum{
 	IRON_ORE,
 	LAVA,
 	COBBLESTONE,
-	OBSIDIAN
+	OBSIDIAN,
+	OAKLOG,
+	OAKLEAF
 }BlockType;
 
 typedef struct{
@@ -84,6 +76,7 @@ typedef struct{
 	Block blocks[CHUNK_WIDTH*CHUNK_HEIGHT];
 
 	bool used;
+	bool structureGenerated;
 }Chunk;
 
 typedef struct{
@@ -160,7 +153,7 @@ void addChunk(World *world, int chunkIdx);
 void ensure_capacity(World *world, int targetIdx);
 
 void draw_World(World *world, int playerChunkCoordX);
-
+void generate_structure(World *world, Chunk *chunk);
 
 float snapToBlockRight(float worldX);
 float snapToBlockLeft(float worldX);
@@ -191,6 +184,8 @@ Texture2D ironOre;
 Texture2D emeraldOre;
 Texture2D cobbleStone;
 Texture2D Obsidian;
+Texture2D oakLog;
+Texture2D oakLeaf;
 
 int main()
 {
@@ -200,6 +195,7 @@ int main()
 	SetTargetFPS(60);
 
 	load_texture();
+	InitializeWorldSeed();
 
 	World world;
 	initWorld(&world);
@@ -267,6 +263,7 @@ int main()
 
 				if(chunkIdx < 0 || chunkIdx >= world.capacity) continue;
 				fluid_system(&world, &world.items[chunkIdx]);
+				generate_structure(&world, &world.items[chunkIdx]);
 			}
 		}
 	
@@ -434,6 +431,12 @@ void draw_chunk(Chunk* chunk)
 				case OBSIDIAN:
 					DrawTexture(Obsidian, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
 					break;
+				case OAKLOG:
+					DrawTexture(oakLog, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
+					break;
+				case OAKLEAF:
+					DrawTexture(oakLeaf, blockX-CAMERA.x , blockY-CAMERA.y, WHITE);
+					break;
 				default:
 					break;
 			}
@@ -459,7 +462,7 @@ void draw_chunk(Chunk* chunk)
 void init_chunk(Chunk* chunk)
 {
 	float thirdHalf = (CHUNK_HEIGHT*BLOCK_HEIGHT)/3.0f;
-    float waterLevel = 0.0f; // Water forms in valleys around Y = -20 to Y = 0
+    float waterLevel = 1000.0f; 
     for(int x = 0; x < CHUNK_WIDTH; x++){
         float worldX = chunk->position.x + (x * BLOCK_WIDTH);
         float surface = noise(worldX);
@@ -507,18 +510,14 @@ void init_chunk(Chunk* chunk)
             }
 
             if(carveCave) {
-                // Deep underground Lava check at the very bottom of the caves
-                if(worldY > 750.0f) {
-                } else {
-                }
                 float depthUnderground = worldY - surface;
                 float randVal = pseudo_random_2d((int)worldX, (int)worldY);
                 
-                if (depthUnderground > 500.0f && randVal > 0.80f) {
+                if (depthUnderground > 400.0f && randVal > 0.80f) {
                     chunk->blocks[idx].type = LAVA;
                     chunk->blocks[idx].isBreak = true;
                     chunk->blocks[idx].fluid_level = 0;
-                } else if (depthUnderground > 250.0f && randVal > 0.60f) {
+                } else if (depthUnderground > 200.0f && randVal > 0.60f) {
                     chunk->blocks[idx].type = WATER;
                     chunk->blocks[idx].isBreak = true;
                     chunk->blocks[idx].fluid_level = 0;
@@ -532,6 +531,8 @@ void init_chunk(Chunk* chunk)
             //  Surface & Underground Blocks (Grass, Stone, Ores)
             if(worldY <= surface + (BLOCK_HEIGHT * 1)) {
                 chunk->blocks[idx].type = GRASS;
+              
+
             } else {
                 BlockType blockType = STONE;
 
@@ -606,18 +607,20 @@ int getIndex(int x, int y)
 
 void load_texture()
 {
-	grassBlock = LoadTexture("Textures/GrassBlock.png");
-	stoneBlock = LoadTexture("Textures/StoneBlock.png");
-	steve      = LoadTexture("Textures/steve.png");
-	bedRock    = LoadTexture("Textures/BedRock.png");
-	waterBlock = LoadTexture("Textures/WaterBlock.png");
-	lavaBlock  = LoadTexture("Textures/LavaBlock.png");
-	diamondOre = LoadTexture("Textures/DiamondOre.png");
-	ironOre    = LoadTexture("Textures/IronOre.png");
-	emeraldOre = LoadTexture("Textures/EmeraldOre.png");
-	goldOre    = LoadTexture("Textures/GoldOre.png");
+	grassBlock  = LoadTexture("Textures/GrassBlock.png");
+	stoneBlock  = LoadTexture("Textures/StoneBlock.png");
+	steve       = LoadTexture("Textures/steve.png");
+	bedRock     = LoadTexture("Textures/BedRock.png");
+	waterBlock  = LoadTexture("Textures/WaterBlock.png");
+	lavaBlock   = LoadTexture("Textures/LavaBlock.png");
+	diamondOre  = LoadTexture("Textures/DiamondOre.png");
+	ironOre     = LoadTexture("Textures/IronOre.png");
+	emeraldOre  = LoadTexture("Textures/EmeraldOre.png");
+	goldOre     = LoadTexture("Textures/GoldOre.png");
 	cobbleStone = LoadTexture("Textures/CobleStone.png");
-	Obsidian = LoadTexture("Textures/Obsidian.png");
+	Obsidian    = LoadTexture("Textures/Obsidian.png");
+	oakLog      = LoadTexture("Textures/OakLog.png");
+	oakLeaf     = LoadTexture("Textures/OakLeaf.png");
 
 	steve.height += (BLOCK_HEIGHT/2);
 }
@@ -636,6 +639,8 @@ void unload_texture()
 	UnloadTexture(diamondOre);
 	UnloadTexture(cobbleStone);
 	UnloadTexture(Obsidian);
+	UnloadTexture(oakLog);
+	UnloadTexture(oakLeaf);
 }
 
 bool player_collided(Chunk chunks[], Vector2 position, Vector2 size)
@@ -1530,6 +1535,185 @@ void ensure_capacity(World *world, int targetIdx)
     }
 }
 
+void generate_structure(World *world, Chunk *chunk)
+{
+	if(chunk->structureGenerated) return;
+	chunk->structureGenerated = true;
+
+	int chunkIdx = chunk_index(chunk_coord(chunk->position.x));
+
+	for(int x = 0; x < CHUNK_WIDTH; x++){
+    	for(int y = 0; y < CHUNK_HEIGHT; y++){
+    		int idx = getIndex(x, y);
+
+    		if(GRASS == chunk->blocks[idx].type){
+    			  //trees on top of grass/surface
+                if(GetRandomValue(0, 5) == 0){
+                	int treeHeight = GetRandomValue(3, 6); 
+                	bool isEmpty = true;
+
+                	for(int t = 1; t < treeHeight; t++){
+	                	int treeIdx = getIndex(x, y-t);
+
+                		Block target = chunk->blocks[treeIdx];
+                		if(AIR != target.type && t < 3){
+                			isEmpty = false;
+                			break;
+                		}
+                	}
+
+                	if(isEmpty){
+		                for(int t = 1; t <= treeHeight; t++){
+		                	if(y-t < 0 || y-t >= CHUNK_HEIGHT) continue;
+
+		                	int treeIdx = getIndex(x, y-t);
+
+		                	chunk->blocks[treeIdx].type = OAKLOG;
+		                	chunk->blocks[treeIdx].isBreak = false;
+		                	chunk->blocks[treeIdx].fluid_level = NONE;
+		                	chunk->blocks[treeIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+
+		                	if(t == treeHeight){
+			                	chunk->blocks[treeIdx].type = OAKLEAF;
+
+			                	if(y-t-1 >= 0 && y-t-1 < CHUNK_HEIGHT){
+				                	int extra = getIndex(x, y-t-1);
+
+				                	if(AIR == chunk->blocks[extra].type){
+					                	chunk->blocks[extra].type = OAKLEAF;
+					                	chunk->blocks[extra].isBreak = false;
+					                	chunk->blocks[extra].fluid_level = NONE;
+					                	chunk->blocks[extra].fluid_parent = (FluidParent){NONE, NONE, NONE};
+					                }
+				                }
+		                	}
+
+		                	if(t > (int)(treeHeight/2)){
+		                		int left  = x - 1;
+		                		int right = x + 1;
+
+
+		                		int leftLeft   = x - 2;
+		                		int rightRight = x + 2;
+
+
+		                		if(left < 0){
+		                			left += CHUNK_WIDTH;
+		                			if(left >= 0 && left < CHUNK_WIDTH){
+			                			int leftChunkIdx = getLeftChunkIndex(chunkIdx);
+
+			                			if(leftChunkIdx >= 0 && leftChunkIdx < world->capacity){
+				                			int leftIdx = getIndex(left, y-t);
+
+				                			if(AIR == world->items[leftChunkIdx].blocks[leftIdx].type){
+					                			world->items[leftChunkIdx].blocks[leftIdx].type    = OAKLEAF;
+					                			world->items[leftChunkIdx].blocks[leftIdx].isBreak = false;
+					                			world->items[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+					                			world->items[leftChunkIdx].blocks[leftIdx].fluid_level  = NONE;
+					                		}
+			                			}
+			                		}
+		                		}else{
+			                		int leftIdx = getIndex(left, y-t);
+		                			if(AIR == chunk->blocks[leftIdx].type){
+					                	chunk->blocks[leftIdx].type = OAKLEAF;
+					                	chunk->blocks[leftIdx].isBreak = false;
+					                	chunk->blocks[leftIdx].fluid_level = NONE;
+					                	chunk->blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+					                }
+		                		}
+		                		if(right >= CHUNK_WIDTH){
+		                			right -= CHUNK_WIDTH;
+		                			if(right >= 0 && right < CHUNK_WIDTH){
+			                			int rightChunkIdx = getRightChunkIndex(chunkIdx);
+
+			                			if(rightChunkIdx >= 0 && rightChunkIdx < world->capacity){
+			                				int rightIdx = getIndex(right, y-t);
+
+			                				if(AIR == world->items[rightChunkIdx].blocks[rightIdx].type){
+					                			world->items[rightChunkIdx].blocks[rightIdx].type    = OAKLEAF;
+					                			world->items[rightChunkIdx].blocks[rightIdx].isBreak = false;
+					                			world->items[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+					                			world->items[rightChunkIdx].blocks[rightIdx].fluid_level  = NONE;
+					                		}
+				                		}
+		                			}
+		                		}else{
+			                		int rightIdx = getIndex(right, y-t);
+
+		                			if(AIR == chunk->blocks[rightIdx].type){
+					                	chunk->blocks[rightIdx].type = OAKLEAF;
+					                	chunk->blocks[rightIdx].isBreak = false;
+					                	chunk->blocks[rightIdx].fluid_level = NONE;
+					                	chunk->blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+			                		}
+			                	}
+
+			                	if(treeHeight > 4 && t < treeHeight){
+				                	if(leftLeft >= 0){
+
+				                		int leftLeftIdx = getIndex(leftLeft, y-t);
+				                		if(AIR == chunk->blocks[leftLeftIdx].type){
+						                	chunk->blocks[leftLeftIdx].type = OAKLEAF;
+						                	chunk->blocks[leftLeftIdx].isBreak = false;
+						                	chunk->blocks[leftLeftIdx].fluid_level = NONE;
+						                	chunk->blocks[leftLeftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+				                		}
+				                	}else{
+				                		leftLeft += CHUNK_WIDTH;
+
+			                			if(leftLeft >= 0 && leftLeft < CHUNK_WIDTH){
+				                			int leftChunkIdx = getLeftChunkIndex(chunkIdx);
+
+				                			if(leftChunkIdx >= 0 && leftChunkIdx < world->capacity){
+					                			int leftIdx = getIndex(leftLeft, y-t);
+
+					                			if(AIR == world->items[leftChunkIdx].blocks[leftIdx].type){
+						                			world->items[leftChunkIdx].blocks[leftIdx].type    = OAKLEAF;
+						                			world->items[leftChunkIdx].blocks[leftIdx].isBreak = false;
+						                			world->items[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						                			world->items[leftChunkIdx].blocks[leftIdx].fluid_level  = NONE;
+						                		}
+				                			}
+				                		}
+				                	}
+
+				                	if(rightRight < CHUNK_WIDTH){
+
+				                		int rightRightIdx = getIndex(rightRight, y-t);
+				                		if(AIR == chunk->blocks[rightRightIdx].type){
+						                	chunk->blocks[rightRightIdx].type = OAKLEAF;
+						                	chunk->blocks[rightRightIdx].isBreak = false;
+						                	chunk->blocks[rightRightIdx].fluid_level = NONE;
+						                	chunk->blocks[rightRightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						                }
+				                	}else{
+			                			rightRight -= CHUNK_WIDTH;
+			                			if(rightRight >= 0 && rightRight < CHUNK_WIDTH){
+				                			int rightChunkIdx = getRightChunkIndex(chunkIdx);
+
+				                			if(rightChunkIdx >= 0 && rightChunkIdx < world->capacity){
+				                				int rightIdx = getIndex(rightRight, y-t);
+
+				                				if(AIR == world->items[rightChunkIdx].blocks[rightIdx].type){
+						                			world->items[rightChunkIdx].blocks[rightIdx].type    = OAKLEAF;
+						                			world->items[rightChunkIdx].blocks[rightIdx].isBreak = false;
+						                			world->items[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						                			world->items[rightChunkIdx].blocks[rightIdx].fluid_level  = NONE;
+						                		}
+					                		}
+			                			}
+			                		}
+				                }
+		                	}
+		                }
+		            }
+	            }
+    		}
+    	}
+    }
+}
+
 void initWorld(World* world)
 {
 	//pre-allocate the memory
@@ -1556,6 +1740,7 @@ void initWorld(World* world)
 		Chunk chunk;
 		chunk.position = chunk_position;
 		chunk.used = true;
+		chunk.structureGenerated = false;
 
 		init_chunk(&chunk);
 		world->items[chunkIdx] = chunk;
@@ -1578,6 +1763,7 @@ void addChunk(World *world, int chunkIdx)
 		Chunk chunk;
 		chunk.position = (Vector2){x, -((CHUNK_HEIGHT*BLOCK_HEIGHT)/2)};	
 		chunk.used = true;
+		chunk.structureGenerated = false;
 
 		init_chunk(&chunk);
 
@@ -1645,9 +1831,11 @@ void addChunk(World *world, int chunkIdx)
 
 		left.position  =  leftPos;
 		left.used      =  true;
+		left.structureGenerated = false;
 
 		right.position = rightPos;
 		right.used     =  true;
+		right.structureGenerated = false;
 
 		init_chunk(&left);
 		init_chunk(&right);
@@ -1664,6 +1852,7 @@ void addChunk(World *world, int chunkIdx)
 
 		right.position = rightPos;
 		right.used     = true;
+		right.structureGenerated = false;
 
 		init_chunk(&right);
 
@@ -1676,6 +1865,7 @@ void addChunk(World *world, int chunkIdx)
 
 		left.position = leftPos;
 		left.used     = true;
+		left.structureGenerated = false;
 
 		init_chunk(&left);
 
@@ -1689,10 +1879,12 @@ void addChunk(World *world, int chunkIdx)
 			Chunk leftLeft;
 			leftLeft.position = (Vector2){current_chunk_position.x - (2*chunkPixelWidth), current_chunk_position.y};
 			leftLeft.used = true;
+			leftLeft.structureGenerated = false;
 
 			Chunk rightRight;
 			rightRight.position = (Vector2){current_chunk_position.x + (2*chunkPixelWidth), current_chunk_position.y};
 			rightRight.used = true;
+			rightRight.structureGenerated = false;
 
 			init_chunk(&leftLeft);
 			init_chunk(&rightRight);
@@ -1708,6 +1900,7 @@ void addChunk(World *world, int chunkIdx)
 			Chunk leftLeft;
 			leftLeft.position = (Vector2){current_chunk_position.x - (2 * chunkPixelWidth), current_chunk_position.y};
 			leftLeft.used = true;
+			leftLeft.structureGenerated = false;
 
 			init_chunk(&leftLeft);
 
@@ -1719,6 +1912,7 @@ void addChunk(World *world, int chunkIdx)
 			Chunk rightRight;
 			rightRight.position = (Vector2){current_chunk_position.x + (2 * chunkPixelWidth), current_chunk_position.y};
 			rightRight.used = true;
+			rightRight.structureGenerated = false;
 
 			init_chunk(&rightRight);
 
@@ -1744,9 +1938,9 @@ void draw_World(World *world, int playerChunkCoordX)
 		float x = world->items[chunkIdx].position.x;
 		float y = world->items[chunkIdx].position.y;
 		if(chunk_index(playerChunkCoordX) == chunk_index(chunk_coord(x))){
-			//DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, BLUE);
+			// DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, BLUE);
 		}else{
-			//DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, WHITE);
+			// DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, WHITE);
 		}
 	}
 }
