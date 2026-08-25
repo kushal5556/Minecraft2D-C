@@ -5,16 +5,22 @@
 #include <stdlib.h>
 
 // ------------ TODO -------------
-// -> Make the world infinite
 // -> Gameplay physics (pick, drop items, game mode)
-
-// #define WIDTH  800
-// #define HEIGHT 600
 
 static int WINDOW_WIDTH  = 800;
 static int WINDOW_HEIGHT = 600;
 
 // --- macros ----
+#define da_append(array, item)\
+	do{\
+		if((array).size >= (array).capacity){\
+			(array).capacity = (array).capacity == 0 ? 10 : (array).capacity * 2;\
+			(array).items = realloc((array).items, sizeof(*(array).items) * (array).capacity);\
+			if(NULL == (array).items){perror("[ERROR]: Falied to Realloc\n"); exit(1);}\
+		}\
+		(array).items[(array).size++] = item;\
+	}while(0)
+
 #define MAX(x,y) (x > y ? x : y)
 #define MIN(x,y) (x < y ? x : y)
 #define NONE -1
@@ -22,9 +28,6 @@ static int WINDOW_HEIGHT = 600;
 // ---- Global Constants -------------
 #define BLOCK_WIDTH 30
 #define BLOCK_HEIGHT 30
-
-// static int BLOCK_WIDTH  = 30;
-// static int BLOCK_HEIGHT = 30;
 
 #define  CHUNK_WIDTH 16
 #define  CHUNK_HEIGHT 64
@@ -37,11 +40,12 @@ static int WINDOW_HEIGHT = 600;
 
 #define MAX_FLUID_LEVEL 7
 
-#define GRAVITY 500.0f
+#define GRAVITY 700.0f
 #define MOVE_SPEED 150.0f
-#define JUMP_FORCE 200.0f
+#define JUMP_FORCE 250.0f
 
 #define WORLD_SIZE 30
+#define INIT_WORLD_SIZE 5
 
 //----- camera ----
 Vector2 CAMERA;
@@ -78,10 +82,12 @@ typedef struct{
 typedef struct{
 	Vector2 position;
 	Block blocks[CHUNK_WIDTH*CHUNK_HEIGHT];
+
+	bool used;
 }Chunk;
 
 typedef struct{
-	Chunk **items;
+	Chunk *items;
 	size_t size;
 	size_t capacity;
 }World;
@@ -114,21 +120,24 @@ void init_world(Chunk chunks[], int size);
 void draw_chunk(Chunk* chunk);
 
 int getIndex(int x, int y);
+
 //---chunk edit---
 int chunk_coord(float posX);
 int chunk_index(int chunk_coord);
+float idxToPosition(int chunkIdx);
+
 
 int getLeftChunkIndex(int chunkIdx);
 int getRightChunkIndex(int chunkIdx);
 
 // block edit
 void breakBlock();
-void placeBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize, BlockType type);
-void findHoveredBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize);
+void placeBlock(World *world, Vector2 playerPos, Vector2 playerSize, BlockType type);
+void findHoveredBlock(World world, Vector2 playerPos, Vector2 playerSize);
 
-DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int blockChunkIdx);
-void placeBlockAt(Chunk chunks[], int blockChunkIdx, int targetX, int targetY, BlockType type, Vector2 playerPos, Vector2 playerSize);
-bool isBlockBreak(Chunk chunks[], int blockX, int blockY, int chunkIdx);
+DirectionXY_i blockPlayerDirection(World world, Vector2 playerPosition, int blockChunkIdx);
+void placeBlockAt(World *world, int blockChunkIdx, int targetX, int targetY, BlockType type, Vector2 playerPos, Vector2 playerSize);
+bool isBlockBreak(World world, int blockX, int blockY, int chunkIdx);
 
 
 // --- noise function ----
@@ -138,20 +147,26 @@ float smooth_noise(float x);
 float terrain_noise(float X); 
 bool is_cave(float worldX, float worldY);
 
-bool isSolid(Chunk chunks[], float worldX, float worldY);
+bool isSolid(World world, float worldX, float worldY);
 bool isLiquid(BlockType type);
 bool hasParent(FluidParent parent);
-bool FindParent(Block block, Chunk chunks[]);
-void fluid_system(Chunk chunks[], Chunk *chunk);
+bool FindParent(Block block, World world);
+void fluid_system(World* world, Chunk *chunk);
 
 // world chunks edit
-void add_chunk(Chunk chunks[], Vector2 pos);
+void initWorld(World* world);
+void freeWorld(World* world);
+void addChunk(World *world, int chunkIdx);
+void ensure_capacity(World *world, int targetIdx);
+
+void draw_World(World *world, int playerChunkCoordX);
+
 
 float snapToBlockRight(float worldX);
 float snapToBlockLeft(float worldX);
 float snapToBlockTop(float worldY);
 float snapToBlockBottom(float worldY);
-void updatePlayer(Player* player, Vector2 playerSize, Chunk chunks[], float dt);
+void updatePlayer(Player* player, Vector2 playerSize, World world, float dt);
 
 // collision function
 bool player_collided(Chunk chunks[], Vector2 position, Vector2 size);
@@ -185,10 +200,12 @@ int main()
 	SetTargetFPS(60);
 
 	load_texture();
-	updateTexture();
 
-	Chunk chunks[WORLD_SIZE];
-	init_world(chunks, WORLD_SIZE);
+	World world;
+	initWorld(&world);
+
+	// Chunk chunks[WORLD_SIZE];
+	// init_world(chunks, WORLD_SIZE);
 
 	Player player = {
 		.position = (Vector2){0, -50},
@@ -202,8 +219,10 @@ int main()
 	while(!WindowShouldClose()){
 		// ------------------ update -------------------
 		float dt = GetFrameTime();
-		
-		updatePlayer(&player, playersize, chunks, dt);
+
+		updatePlayer(&player, playersize, world, dt);
+		//check for new chunk
+		addChunk(&world, chunk_index(chunk_coord(player.position.x)));
 
 		if(IsKeyPressed(KEY_ONE))   SelectedBlock = WATER;
 		if(IsKeyPressed(KEY_TWO))   SelectedBlock = STONE;
@@ -223,7 +242,7 @@ int main()
 
 		// ------------ update chunks ---------------
 		//--- ray casting ---------
-		findHoveredBlock(chunks, player.position, playersize);
+		findHoveredBlock(world, player.position, playersize);
 
 		// ---- block breaking -----------
 		if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)){
@@ -235,7 +254,7 @@ int main()
 
 		// ---- block placing -----------
 		if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)){
-			placeBlock(chunks, player.position, playersize, SelectedBlock);
+			placeBlock(&world, player.position, playersize, SelectedBlock);
 		}
 
 		int playerChunkCoordX = chunk_coord(player.position.x);
@@ -246,8 +265,8 @@ int main()
 			for(int i = -CHUNK_DISTANCE; i <= CHUNK_DISTANCE; i++){
 				int chunkIdx = chunk_index(playerChunkCoordX + i);
 
-				if(chunkIdx < 0 || chunkIdx >= WORLD_SIZE) continue;
-				fluid_system(chunks, &chunks[chunkIdx]);
+				if(chunkIdx < 0 || chunkIdx >= world.capacity) continue;
+				fluid_system(&world, &world.items[chunkIdx]);
 			}
 		}
 	
@@ -255,20 +274,7 @@ int main()
 		BeginDrawing();
 		ClearBackground(BLACK);
 
-		for(int i = -CHUNK_DISTANCE ; i <= CHUNK_DISTANCE; i++){
-			int chunkIdx = chunk_index(playerChunkCoordX + i);
-
-			if(chunkIdx < 0 || chunkIdx >= WORLD_SIZE) continue;
-			draw_chunk(&chunks[chunkIdx]);
-
-			float x = chunks[chunkIdx].position.x;
-			float y = chunks[chunkIdx].position.y;
-			if(chunk_index(chunk_coord(player.position.x)) == chunk_index(chunk_coord(x))){
-				//DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, BLUE);
-			}else{
-				//DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, WHITE);
-			}
-		}
+		draw_World(&world, chunk_coord(player.position.x));
 
 		//DrawRectangle(player.position.x-CAMERA.x, player.position.y - CAMERA.y, playersize.x, playersize.y, RED);
 		DrawTexture(steve, player.position.x-CAMERA.x, player.position.y-CAMERA.y, WHITE);
@@ -286,6 +292,7 @@ int main()
 
 	// -------- close everything ------------------
 	unload_texture();
+	freeWorld(&world);
 	CloseWindow();
 	return 0;
 }
@@ -311,7 +318,7 @@ float snapToBlockBottom(float worldY)
 	return (floorf(worldY / BLOCK_HEIGHT) + 1) * BLOCK_HEIGHT;
 }
 
-void updatePlayer(Player* player, Vector2 playerSize, Chunk chunks[], float dt)
+void updatePlayer(Player* player, Vector2 playerSize, World world, float dt)
 {
 	player->velocity.x = 0;
 	player->velocity.y += GRAVITY * dt;
@@ -333,15 +340,15 @@ void updatePlayer(Player* player, Vector2 playerSize, Chunk chunks[], float dt)
 	Vector2 pos = player->position;
 
 	if(player->velocity.x > 0){//going right
-		if (isSolid(chunks, pos.x + playerSize.x, pos.y) ||
-			isSolid(chunks, pos.x + playerSize.x, pos.y + playerSize.y - 1)){
+		if (isSolid(world, pos.x + playerSize.x, pos.y) ||
+			isSolid(world, pos.x + playerSize.x, pos.y + playerSize.y - 1)){
 
 			player->position.x = snapToBlockLeft(pos.x + playerSize.x) - playerSize.x;
 			player->velocity.x = 0;
 		}
 	}else if(player->velocity.x < 0){//going left
-		if (isSolid(chunks, pos.x, pos.y) ||
-			isSolid(chunks, pos.x, pos.y + playerSize.y - 1)){
+		if (isSolid(world, pos.x, pos.y) ||
+			isSolid(world, pos.x, pos.y + playerSize.y - 1)){
 
 			player->position.x = snapToBlockRight(pos.x);
 			player->velocity.x = 0;
@@ -353,16 +360,16 @@ void updatePlayer(Player* player, Vector2 playerSize, Chunk chunks[], float dt)
 	player->isInGround = false;
 
 	if(player->velocity.y > 0){ //going down
-		if (isSolid(chunks, pos.x, pos.y + playerSize.y) || 
-			isSolid(chunks, pos.x + playerSize.x - 1, pos.y + playerSize.y)){
+		if (isSolid(world, pos.x, pos.y + playerSize.y) || 
+			isSolid(world, pos.x + playerSize.x - 1, pos.y + playerSize.y)){
 
 			player->position.y = snapToBlockTop(pos.y + playerSize.y) - playerSize.y;
 			player->velocity.y = 0;
 			player->isInGround = true;
 		}
 	}else if(player->velocity.y < 0){//jumping up
-		if (isSolid(chunks, pos.x, pos.y) || 
-			isSolid(chunks, pos.x + playerSize.x - 1, pos.y)){
+		if (isSolid(world, pos.x, pos.y) || 
+			isSolid(world, pos.x + playerSize.x - 1, pos.y)){
 
 			player->position.y = snapToBlockBottom(pos.y);
 			player->velocity.y = 0;
@@ -578,6 +585,20 @@ int chunk_coord(float posX)
 	return (int)floorf(posX / (CHUNK_WIDTH * BLOCK_WIDTH));	
 }
 
+float idxToPosition(int chunkIdx)
+{
+	float chunkPixelWidth = (float)(CHUNK_WIDTH * BLOCK_WIDTH);
+
+	if(0 == chunkIdx % 2){
+		int step = chunkIdx/2;
+
+		return (float)(chunkPixelWidth*step);
+	}else{
+		int step = (chunkIdx + 1) / 2;
+		return -((float)(step * chunkPixelWidth));
+	}
+}
+
 int getIndex(int x, int y)
 {
 	return x + (y * CHUNK_WIDTH);
@@ -597,6 +618,8 @@ void load_texture()
 	goldOre    = LoadTexture("Textures/GoldOre.png");
 	cobbleStone = LoadTexture("Textures/CobleStone.png");
 	Obsidian = LoadTexture("Textures/Obsidian.png");
+
+	steve.height += (BLOCK_HEIGHT/2);
 }
 
 void unload_texture()
@@ -613,9 +636,7 @@ void unload_texture()
 	UnloadTexture(diamondOre);
 	UnloadTexture(cobbleStone);
 	UnloadTexture(Obsidian);
-
 }
-
 
 bool player_collided(Chunk chunks[], Vector2 position, Vector2 size)
 {	
@@ -706,51 +727,51 @@ int getRightChunkIndex(int chunkIdx)
 	return -1;
 }
 
-void placeBlockAt(Chunk chunks[], int blockChunkIdx, int targetX, int targetY, BlockType type, Vector2 playerPos, Vector2 playerSize)
+void placeBlockAt(World *world, int blockChunkIdx, int targetX, int targetY, BlockType type, Vector2 playerPos, Vector2 playerSize)
 {
 	if(targetX >= 0 && targetX < CHUNK_WIDTH && targetY >= 0 && targetY < CHUNK_HEIGHT){
 		int targetIdx = getIndex(targetX, targetY);
 
-		if(chunks[blockChunkIdx].blocks[targetIdx].isBreak){
+		if(world->items[blockChunkIdx].blocks[targetIdx].isBreak){
 			Vector2 bpos = {
-				chunks[blockChunkIdx].position.x + (targetX * BLOCK_WIDTH),
-				chunks[blockChunkIdx].position.y + (targetY * BLOCK_HEIGHT),
+				world->items[blockChunkIdx].position.x + (targetX * BLOCK_WIDTH),
+				world->items[blockChunkIdx].position.y + (targetY * BLOCK_HEIGHT),
 			};
 			Vector2 bsize = {BLOCK_WIDTH, BLOCK_HEIGHT};
 
 			if(!AABB(playerPos, playerSize, bpos, bsize)){
 				if(isLiquid(type)){
-					BlockType targetBlock = chunks[blockChunkIdx].blocks[targetIdx].type;
+					BlockType targetBlock = world->items[blockChunkIdx].blocks[targetIdx].type;
 					if(isLiquid(targetBlock) && targetBlock != type){
 						if(WATER == targetBlock && LAVA == type){
-							chunks[blockChunkIdx].blocks[targetIdx].type = STONE;
-							chunks[blockChunkIdx].blocks[targetIdx].isBreak = false;
-							chunks[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
-							chunks[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+							world->items[blockChunkIdx].blocks[targetIdx].type = STONE;
+							world->items[blockChunkIdx].blocks[targetIdx].isBreak = false;
+							world->items[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
+							world->items[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 						}else if(LAVA == targetBlock && WATER == type){
-							chunks[blockChunkIdx].blocks[targetIdx].type = OBSIDIAN;
-							chunks[blockChunkIdx].blocks[targetIdx].isBreak = false;
-							chunks[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
-							chunks[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+							world->items[blockChunkIdx].blocks[targetIdx].type = OBSIDIAN;
+							world->items[blockChunkIdx].blocks[targetIdx].isBreak = false;
+							world->items[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
+							world->items[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 						}
 					}else{
-						chunks[blockChunkIdx].blocks[targetIdx].type = type;
-						chunks[blockChunkIdx].blocks[targetIdx].isBreak = true;
-						chunks[blockChunkIdx].blocks[targetIdx].fluid_level = 0;
-						chunks[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						world->items[blockChunkIdx].blocks[targetIdx].type = type;
+						world->items[blockChunkIdx].blocks[targetIdx].isBreak = true;
+						world->items[blockChunkIdx].blocks[targetIdx].fluid_level = 0;
+						world->items[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 					}
 				}else{
-					chunks[blockChunkIdx].blocks[targetIdx].isBreak = false;
-					chunks[blockChunkIdx].blocks[targetIdx].type = type;
-					chunks[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
-					chunks[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+					world->items[blockChunkIdx].blocks[targetIdx].isBreak = false;
+					world->items[blockChunkIdx].blocks[targetIdx].type = type;
+					world->items[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
+					world->items[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 				}
 			}
 		}
 	}	
 }
 
-bool isBlockBreak(Chunk chunks[], int blockX, int blockY, int chunkIdx)
+bool isBlockBreak(World world, int blockX, int blockY, int chunkIdx)
 {
 	int targetChunk = chunkIdx;
 
@@ -762,23 +783,23 @@ bool isBlockBreak(Chunk chunks[], int blockX, int blockY, int chunkIdx)
 		targetChunk = getRightChunkIndex(chunkIdx);
 	}
 
-	if(targetChunk < 0 || targetChunk >= WORLD_SIZE) return false;
+	if(targetChunk < 0 || targetChunk >= world.capacity) return false;
 
 	int idx = getIndex(blockX, blockY);
-	return chunks[targetChunk].blocks[idx].isBreak;
+	return world.items[targetChunk].blocks[idx].isBreak;
 }
 
-DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int blockChunkIdx)
+DirectionXY_i blockPlayerDirection(World world, Vector2 playerPosition, int blockChunkIdx)
 {
 
-	int blockX = (int)(hitPosition.x - chunks[blockChunkIdx].position.x) / BLOCK_WIDTH;
-	int blockY = (int)(hitPosition.y - chunks[blockChunkIdx].position.y) / BLOCK_HEIGHT;
+	int blockX = (int)(hitPosition.x - world.items[blockChunkIdx].position.x) / BLOCK_WIDTH;
+	int blockY = (int)(hitPosition.y - world.items[blockChunkIdx].position.y) / BLOCK_HEIGHT;
 
 	float blockWorldX = hitPosition.x;
 	float playerWorldX = playerPosition.x;	
 
-	int playerX = (int)(playerPosition.x - chunks[blockChunkIdx].position.x) / BLOCK_WIDTH;
-	int playerY = (int)(playerPosition.y - chunks[blockChunkIdx].position.y) / BLOCK_WIDTH;
+	int playerX = (int)(playerPosition.x - world.items[blockChunkIdx].position.x) / BLOCK_WIDTH;
+	int playerY = (int)(playerPosition.y - world.items[blockChunkIdx].position.y) / BLOCK_WIDTH;
 
 	int targetX = -1;
 	int targetY = -1;
@@ -800,7 +821,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 			//more than 2 block up
 				targetX = blockX;							
 				targetY = blockY + 1; //if not down,down
-				if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+				if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 					//right
 					targetX = blockX + 1; 
 					targetY = blockY;
@@ -810,7 +831,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 				if(blockX < playerX-1){
 					targetX = blockX + 1;//if not right, right
 					targetY = blockY;
-					if(!isBlockBreak(chunks,targetX, targetY, blockChunkIdx)){
+					if(!isBlockBreak(world,targetX, targetY, blockChunkIdx)){
 						//down
 						targetX = blockX;
 						targetY = blockY + 1;
@@ -819,7 +840,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 					if(blockY < playerY){
 						targetX = blockX;
 						targetY = blockY + 1;//if not down, down
-						if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+						if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 							//right
 							targetX = blockX + 1;
 							targetY = blockY;
@@ -836,7 +857,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 				//more than 2 block down
 				targetX = blockX;
 				targetY = blockY - 1;//if not up, up
-				if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+				if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 					//right
 					targetX = blockX + 1;
 					targetY = blockY;
@@ -847,7 +868,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 					//right
 					targetX = blockX + 1;//if not right, right
 					targetY = blockY;
-					if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 						//up
 						targetX = blockX;
 						targetY = blockY - 1;
@@ -855,7 +876,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 				}else{
 					targetX = blockX;
 					targetY = blockY - 1; //if not up, up
-					if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 						//right
 						targetX = blockX + 1;
 						targetY = blockY;
@@ -871,7 +892,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 				//more than 2 block up
 				targetX = blockX;
 				targetY = blockY + 1;//if not below, below
-				if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+				if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 					//left
 					targetX = blockX - 1;  
 					targetY = blockY;
@@ -881,7 +902,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 				if(blockX > playerX+1){
 					targetX = blockX - 1;//if not left, left
 					targetY = blockY;
-					if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 						targetX = blockX;
 						targetY = blockY + 1;
 						//down
@@ -890,7 +911,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 					if(blockY < playerY){
 						targetX = blockX;
 						targetY = blockY + 1;//if not down, down
-						if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+						if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 							//left
 							targetX = blockX - 1; 
 							targetY = blockY;
@@ -907,7 +928,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 				//more than 2 block, down
 				targetX = blockX;
 				targetY = blockY - 1;//if not up, up
-				if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+				if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 					//left
 					targetX = blockX - 1; //Issue here
 					targetY = blockY;	
@@ -918,7 +939,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 					//left
 					targetX = blockX - 1;//if not left, left
 					targetY = blockY;
-					if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 						//up
 						targetX = blockX;
 						targetY = blockY - 1;
@@ -926,7 +947,7 @@ DirectionXY_i blockPlayerDirection(Chunk chunks[], Vector2 playerPosition, int b
 				}else{
 					targetX = blockX;
 					targetY = blockY - 1; //if not up, up
-					if(!isBlockBreak(chunks, targetX, targetY, blockChunkIdx)){
+					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
 						// left
 						targetX = blockX - 1; 
 						targetY = blockY;
@@ -962,13 +983,13 @@ void breakBlock()
 	}
 }
 
-void placeBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize, BlockType type)
+void placeBlock(World *world, Vector2 playerPos, Vector2 playerSize, BlockType type)
 {
 	if(hoveredBlock != NULL){
 		int blockChunkIdx = chunk_index(chunk_coord(hitPosition.x));
 
 		//find direction 
-		DirectionXY_i direction = blockPlayerDirection(chunks, playerPos, blockChunkIdx);
+		DirectionXY_i direction = blockPlayerDirection(*world, playerPos, blockChunkIdx);
 		int targetX = direction.x;
 		int targetY = direction.y;
 
@@ -978,7 +999,7 @@ void placeBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize, BlockType
 			//left chunk
 			int leftChunkIdx = getLeftChunkIndex(blockChunkIdx);
 
-			if(leftChunkIdx  >= 0 && leftChunkIdx < WORLD_SIZE){
+			if(leftChunkIdx  >= 0 && leftChunkIdx < world->capacity){
 				targetX += CHUNK_WIDTH; 
 				blockChunkIdx = leftChunkIdx;
 			}
@@ -986,17 +1007,17 @@ void placeBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize, BlockType
 			//right chunk
 			int rightChunkIdx = getRightChunkIndex(blockChunkIdx);
 
-			if(rightChunkIdx >= 0 && rightChunkIdx < WORLD_SIZE){
+			if(rightChunkIdx >= 0 && rightChunkIdx < world->capacity){
 				targetX -= CHUNK_WIDTH;
 				blockChunkIdx = rightChunkIdx;
 			}
 		}
 
-        placeBlockAt(chunks, blockChunkIdx, targetX, targetY, type , playerPos, playerSize);
+        placeBlockAt(world, blockChunkIdx, targetX, targetY, type , playerPos, playerSize);
 	}
 }
 
-void findHoveredBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize)
+void findHoveredBlock(World world, Vector2 playerPos, Vector2 playerSize)
 {
 	Vector2 mouse = GetMousePosition();
 	mouse.x += CAMERA.x;
@@ -1025,18 +1046,18 @@ void findHoveredBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize)
 		int rayChunkCoordX = chunk_coord(playerRay.x);
 		int rayChunkIdx = chunk_index(rayChunkCoordX);
 
-		if(rayChunkIdx < 0 || rayChunkIdx >= WORLD_SIZE) continue;
+		if(rayChunkIdx < 0 || rayChunkIdx >= world.capacity) continue;
 
-		int localX = (int) floorf((playerRay.x - chunks[rayChunkIdx].position.x) / BLOCK_WIDTH);
-		int localY = (int) floorf((playerRay.y - chunks[rayChunkIdx].position.y) / BLOCK_HEIGHT);
+		int localX = (int) floorf((playerRay.x - world.items[rayChunkIdx].position.x) / BLOCK_WIDTH);
+		int localY = (int) floorf((playerRay.y - world.items[rayChunkIdx].position.y) / BLOCK_HEIGHT);
 
 		if(localX >= 0 && localX < CHUNK_WIDTH && localY >= 0 && localY < CHUNK_HEIGHT){
 			int idx = localX + (localY * CHUNK_WIDTH);
 
-			if(!chunks[rayChunkIdx].blocks[idx].isBreak){
+			if(!world.items[rayChunkIdx].blocks[idx].isBreak){
 				Vector2 bpos = {
-					chunks[rayChunkIdx].position.x + (localX * BLOCK_WIDTH),
-					chunks[rayChunkIdx].position.y + (localY * BLOCK_HEIGHT)
+					world.items[rayChunkIdx].position.x + (localX * BLOCK_WIDTH),
+					world.items[rayChunkIdx].position.y + (localY * BLOCK_HEIGHT)
 				};
 				Vector2 bsize = {BLOCK_WIDTH, BLOCK_HEIGHT};
 
@@ -1045,7 +1066,7 @@ void findHoveredBlock(Chunk chunks[], Vector2 playerPos, Vector2 playerSize)
 				if(rect_circle_collision(bpos, bsize, playerRay, RAY_RADIUS)){
 					rayHitSomething = true;
 
-					hoveredBlock = &chunks[rayChunkIdx].blocks[idx];
+					hoveredBlock = &world.items[rayChunkIdx].blocks[idx];
 					hitPosition = bpos;
 					break;
 				}
@@ -1136,19 +1157,19 @@ bool is_cave(float worldX, float worldY)
     return (combined > -0.18f && combined < 0.18f);
 }
 
-bool isSolid(Chunk chunks[], float worldX, float worldY)
+bool isSolid(World world, float worldX, float worldY)
 {
 	int chunkIdx = chunk_index(chunk_coord(worldX));
 
-	if(chunkIdx < 0 || chunkIdx >= WORLD_SIZE) return false;
+	if(chunkIdx < 0 || chunkIdx >= world.capacity) return false;
 
-	int localX = (int)(worldX - chunks[chunkIdx].position.x) / BLOCK_WIDTH;
-	int localY = (int)(worldY - chunks[chunkIdx].position.y) / BLOCK_HEIGHT;
+	int localX = (int)(worldX - world.items[chunkIdx].position.x) / BLOCK_WIDTH;
+	int localY = (int)(worldY - world.items[chunkIdx].position.y) / BLOCK_HEIGHT;
 
 	if(localX < 0 || localX >= CHUNK_WIDTH) return false;
 	if(localY < 0 || localY >= CHUNK_HEIGHT) return false;
 
-	Block target = chunks[chunkIdx].blocks[getIndex(localX, localY)];
+	Block target = world.items[chunkIdx].blocks[getIndex(localX, localY)];
 
 	if(AIR == target.type || WATER == target.type || LAVA == target.type){
 		return false;
@@ -1181,12 +1202,12 @@ bool isSource(Block block)
 	return false;
 }
 
-bool FindParent(Block block, Chunk chunks[])
+bool FindParent(Block block, World world)
 {
 	FluidParent parent = block.fluid_parent;
 
-	if(parent.chunkIdx < 0 || parent.chunkIdx >= WORLD_SIZE) return false;
-	Block parentBlock = chunks[parent.chunkIdx].blocks[getIndex(parent.x, parent.y)];
+	if(parent.chunkIdx < 0 || parent.chunkIdx >= world.capacity) return false;
+	Block parentBlock = world.items[parent.chunkIdx].blocks[getIndex(parent.x, parent.y)];
 		
 	if(parentBlock.type != block.type){
 		return false;
@@ -1194,7 +1215,7 @@ bool FindParent(Block block, Chunk chunks[])
 	return true;
 }
 
-void fluid_system(Chunk chunks[], Chunk *chunk)
+void fluid_system(World *world, Chunk *chunk)
 {
 
 	int size = CHUNK_WIDTH * CHUNK_HEIGHT;
@@ -1219,7 +1240,7 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 
 			if(!isLiquid(fluid)) continue;
 
-			if(!FindParent(block, chunks) && !isSource(block)){
+			if(!FindParent(block, *world) && !isSource(block)){
 				//vanish
 				block_buffer[idx].type = AIR;
 				block_buffer[idx].fluid_level = NONE;
@@ -1284,13 +1305,13 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 			}
 
 			if(down < CHUNK_HEIGHT){
-				if(leftChunkIdx >= 0 && leftChunkIdx < WORLD_SIZE){
+				if(leftChunkIdx >= 0 && leftChunkIdx < world->capacity){
 					int downLeft = left + (down * CHUNK_WIDTH);
 					int leftIdx =  left + (y * CHUNK_WIDTH);
 
-					if(chunks[leftChunkIdx].blocks[downLeft].isBreak && chunks[leftChunkIdx].blocks[leftIdx].isBreak){
-						if(isLiquid(chunks[leftChunkIdx].blocks[downLeft].type)){
-							if(fluid == chunks[leftChunkIdx].blocks[downLeft].type){
+					if(world->items[leftChunkIdx].blocks[downLeft].isBreak && world->items[leftChunkIdx].blocks[leftIdx].isBreak){
+						if(isLiquid(world->items[leftChunkIdx].blocks[downLeft].type)){
+							if(fluid == world->items[leftChunkIdx].blocks[downLeft].type){
 								FlowLeft = true;
 							}else{
 								FlowLeft = true;
@@ -1313,13 +1334,13 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 			}
 
 			if(down < CHUNK_HEIGHT){
-				if(rightChunkIdx >= 0 && rightChunkIdx < WORLD_SIZE){
+				if(rightChunkIdx >= 0 && rightChunkIdx < world->capacity){
 					int downRight = right + (down * CHUNK_WIDTH);
 					int rightIdx = right + (y * CHUNK_WIDTH);
 
-					if(chunks[rightChunkIdx].blocks[downRight].isBreak && chunks[rightChunkIdx].blocks[rightIdx].isBreak){
-						if(isLiquid(chunks[rightChunkIdx].blocks[downRight].type)){
-							if(chunks[rightChunkIdx].blocks[downRight].type == fluid){
+					if(world->items[rightChunkIdx].blocks[downRight].isBreak && world->items[rightChunkIdx].blocks[rightIdx].isBreak){
+						if(isLiquid(world->items[rightChunkIdx].blocks[downRight].type)){
+							if(world->items[rightChunkIdx].blocks[downRight].type == fluid){
 								FlowRight = true;
 							}else{
 								FlowRight = true;
@@ -1339,8 +1360,8 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 				int leftIdx      = left + (y * CHUNK_WIDTH);
 				int downLeftIdx  = left + (down * CHUNK_WIDTH);
 
-				Block blockLeft = chunks[leftChunkIdx].blocks[leftIdx];
-				Block blockDownLeft = chunks[leftChunkIdx].blocks[downLeftIdx];
+				Block blockLeft = world->items[leftChunkIdx].blocks[leftIdx];
+				Block blockDownLeft = world->items[leftChunkIdx].blocks[downLeftIdx];
 
 				if(AIR == blockLeft.type){
 					if(leftChunkIdx == chunkIdx){
@@ -1349,10 +1370,10 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 						block_buffer[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
 						block_buffer[leftIdx].isBreak = true;
 					}else{
-						chunks[leftChunkIdx].blocks[leftIdx].type = fluid;
-						chunks[leftChunkIdx].blocks[leftIdx].fluid_level = level;
-						chunks[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
-						chunks[leftChunkIdx].blocks[leftIdx].isBreak = true;
+						world->items[leftChunkIdx].blocks[leftIdx].type = fluid;
+						world->items[leftChunkIdx].blocks[leftIdx].fluid_level = level;
+						world->items[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						world->items[leftChunkIdx].blocks[leftIdx].isBreak = true;
 					}
 				}else if(isLiquid(blockLeft.type) && fluid != blockLeft.type){
 					if(leftChunkIdx == chunkIdx){
@@ -1361,10 +1382,10 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 						block_buffer[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 						block_buffer[leftIdx].isBreak = false;
 					}else{
-						chunks[leftChunkIdx].blocks[leftIdx].type = COBBLESTONE;
-						chunks[leftChunkIdx].blocks[leftIdx].fluid_level = NONE;
-						chunks[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
-						chunks[leftChunkIdx].blocks[leftIdx].isBreak = false;
+						world->items[leftChunkIdx].blocks[leftIdx].type = COBBLESTONE;
+						world->items[leftChunkIdx].blocks[leftIdx].fluid_level = NONE;
+						world->items[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						world->items[leftChunkIdx].blocks[leftIdx].isBreak = false;
 					}
 				}
 			}
@@ -1373,8 +1394,8 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 				int rightIdx      = right + (y * CHUNK_WIDTH);
 				int downRightIdx  = right + (down * CHUNK_WIDTH);
 
-				Block blockRight     = chunks[rightChunkIdx].blocks[rightIdx];
-				Block blockDownRight = chunks[rightChunkIdx].blocks[downRightIdx];
+				Block blockRight     = world->items[rightChunkIdx].blocks[rightIdx];
+				Block blockDownRight = world->items[rightChunkIdx].blocks[downRightIdx];
 
 				if(AIR == blockRight.type){
 					if(rightChunkIdx == chunkIdx){
@@ -1383,10 +1404,10 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 						block_buffer[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
 						block_buffer[rightIdx].isBreak = true;
 					}else{
-						chunks[rightChunkIdx].blocks[rightIdx].type = fluid;
-						chunks[rightChunkIdx].blocks[rightIdx].fluid_level = level;
-						chunks[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
-						chunks[rightChunkIdx].blocks[rightIdx].isBreak = true;
+						world->items[rightChunkIdx].blocks[rightIdx].type = fluid;
+						world->items[rightChunkIdx].blocks[rightIdx].fluid_level = level;
+						world->items[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						world->items[rightChunkIdx].blocks[rightIdx].isBreak = true;
 					}
 				}else if(isLiquid(blockRight.type) && fluid != blockRight.type){
 					if(rightChunkIdx == chunkIdx){
@@ -1395,10 +1416,10 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 						block_buffer[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 						block_buffer[rightIdx].isBreak = false;
 					}else{
-						chunks[rightChunkIdx].blocks[rightIdx].type = COBBLESTONE;
-						chunks[rightChunkIdx].blocks[rightIdx].fluid_level = NONE;
-						chunks[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
-						chunks[rightChunkIdx].blocks[rightIdx].isBreak = false;
+						world->items[rightChunkIdx].blocks[rightIdx].type = COBBLESTONE;
+						world->items[rightChunkIdx].blocks[rightIdx].fluid_level = NONE;
+						world->items[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						world->items[rightChunkIdx].blocks[rightIdx].isBreak = false;
 					}
 				}
 			}
@@ -1408,10 +1429,10 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 			if(level >= MAX_FLUID_LEVEL) continue;
 
 			//normal left
-			if(leftChunkIdx  >= 0 && leftChunkIdx < WORLD_SIZE){
+			if(leftChunkIdx  >= 0 && leftChunkIdx < world->capacity){
 
 				int leftIdx = left + (y * CHUNK_WIDTH);
-				Block leftBlock = chunks[leftChunkIdx].blocks[leftIdx];
+				Block leftBlock = world->items[leftChunkIdx].blocks[leftIdx];
 
 				if(AIR == leftBlock.type){
 					if(leftChunkIdx == chunkIdx){
@@ -1420,10 +1441,10 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 						block_buffer[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
 						block_buffer[leftIdx].isBreak = true;
 					}else{
-						chunks[leftChunkIdx].blocks[leftIdx].type = fluid;
+						world->items[leftChunkIdx].blocks[leftIdx].type = fluid;
 						block_buffer[leftIdx].fluid_level = level + 1 > MAX_FLUID_LEVEL ?  MAX_FLUID_LEVEL : level + 1;
-						chunks[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
-						chunks[leftChunkIdx].blocks[leftIdx].isBreak = true;
+						world->items[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						world->items[leftChunkIdx].blocks[leftIdx].isBreak = true;
 					}	
 				}else if(isLiquid(leftBlock.type) && leftBlock.type != fluid){
 					if(leftChunkIdx == chunkIdx){
@@ -1432,19 +1453,19 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 						block_buffer[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 						block_buffer[leftIdx].isBreak = false;
 					}else{
-						chunks[leftChunkIdx].blocks[leftIdx].type = fluid;
-						chunks[leftChunkIdx].blocks[leftIdx].fluid_level = NONE;
-						chunks[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
-						chunks[leftChunkIdx].blocks[leftIdx].isBreak = false;
+						world->items[leftChunkIdx].blocks[leftIdx].type = fluid;
+						world->items[leftChunkIdx].blocks[leftIdx].fluid_level = NONE;
+						world->items[leftChunkIdx].blocks[leftIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						world->items[leftChunkIdx].blocks[leftIdx].isBreak = false;
 					}	
 				}
 			}
 
 			//normal right
-			if(rightChunkIdx >= 0 && rightChunkIdx < WORLD_SIZE){
+			if(rightChunkIdx >= 0 && rightChunkIdx < world->capacity){
 
 				int rightIdx = right + (y * CHUNK_WIDTH);
-				Block rightBlock = chunks[rightChunkIdx].blocks[rightIdx];
+				Block rightBlock = world->items[rightChunkIdx].blocks[rightIdx];
 
 				if(AIR == rightBlock.type){
 					if(rightChunkIdx == chunkIdx){
@@ -1453,10 +1474,10 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 						block_buffer[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
 						block_buffer[rightIdx].isBreak = true;
 					}else{
-						chunks[rightChunkIdx].blocks[rightIdx].type = fluid;
-						chunks[rightChunkIdx].blocks[rightIdx].fluid_level = level + 1;
-						chunks[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
-						chunks[rightChunkIdx].blocks[rightIdx].isBreak = true;
+						world->items[rightChunkIdx].blocks[rightIdx].type = fluid;
+						world->items[rightChunkIdx].blocks[rightIdx].fluid_level = level + 1;
+						world->items[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){chunkIdx, x, y};
+						world->items[rightChunkIdx].blocks[rightIdx].isBreak = true;
 					}	
 				}else if(isLiquid(rightBlock.type) && rightBlock.type != fluid){
 					if(rightChunkIdx == chunkIdx){
@@ -1465,10 +1486,10 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 						block_buffer[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
 						block_buffer[rightIdx].isBreak = false;
 					}else{
-						chunks[rightChunkIdx].blocks[rightIdx].type = COBBLESTONE;
-						chunks[rightChunkIdx].blocks[rightIdx].fluid_level = NONE;
-						chunks[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
-						chunks[rightChunkIdx].blocks[rightIdx].isBreak = false;
+						world->items[rightChunkIdx].blocks[rightIdx].type = COBBLESTONE;
+						world->items[rightChunkIdx].blocks[rightIdx].fluid_level = NONE;
+						world->items[rightChunkIdx].blocks[rightIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+						world->items[rightChunkIdx].blocks[rightIdx].isBreak = false;
 					}	
 				}
 			}
@@ -1484,7 +1505,248 @@ void fluid_system(Chunk chunks[], Chunk *chunk)
 	}
 }
 
-void add_chunk(Chunk chunks[], Vector2 pos)
+// infinite world 
+void ensure_capacity(World *world, int targetIdx) 
 {
-	chunks;	
+    if (targetIdx < 0) return;
+    
+    if (targetIdx >= world->capacity) {
+        size_t oldCapacity = world->capacity;
+        // Double until it fits 
+        while (targetIdx >= world->capacity) {
+            world->capacity *= 2;
+        }
+        
+        world->items = realloc(world->items, sizeof(*world->items) * world->capacity);
+        if (world->items == NULL) {
+            perror("[WORLD ERROR]: Failed to Realloc\n");
+            exit(1);
+        }
+        
+        // Reset flags for the newly added memory block
+        for (int i = oldCapacity; i < world->capacity; i++) {
+            world->items[i].used = false;
+        }
+    }
+}
+
+void initWorld(World* world)
+{
+	//pre-allocate the memory
+	world->capacity = INIT_WORLD_SIZE*2;
+	world->items = malloc(sizeof(*world->items)*world->capacity);
+
+	if(world->items == NULL){
+		perror("[WORLD INIT]: Failed to malloc\n");
+		exit(1);
+	}
+
+	for(int i = 0; i < world->capacity; i++){
+		world->items[i].used = false;	
+	}
+
+	for(int i = 0; i < INIT_WORLD_SIZE; i++){
+
+		Vector2 chunk_position = {(i * BLOCK_WIDTH * CHUNK_WIDTH), -((CHUNK_HEIGHT * BLOCK_HEIGHT) / 2)};
+		chunk_position.x -= ((int)(INIT_WORLD_SIZE/2)) * (BLOCK_WIDTH * CHUNK_WIDTH);
+
+		int chunkIdx = chunk_index(chunk_coord(chunk_position.x));
+		if(chunkIdx < 0 || chunkIdx >= INIT_WORLD_SIZE) continue;
+
+		Chunk chunk;
+		chunk.position = chunk_position;
+		chunk.used = true;
+
+		init_chunk(&chunk);
+		world->items[chunkIdx] = chunk;
+		world->size++;
+	}
+}
+
+void addChunk(World *world, int chunkIdx)
+{
+	if(0 == world->size){
+		initWorld(world);
+		return;
+	}
+	if(chunkIdx < 0) return;
+
+	ensure_capacity(world, chunkIdx);//if player somehow exceeds the capacity , just scale the it
+
+	if(!world->items[chunkIdx].used){
+		float x = idxToPosition(chunkIdx);
+		Chunk chunk;
+		chunk.position = (Vector2){x, -((CHUNK_HEIGHT*BLOCK_HEIGHT)/2)};	
+		chunk.used = true;
+
+		init_chunk(&chunk);
+
+		world->items[chunkIdx] = chunk;
+		world->size++;
+	}
+
+	bool leftExist = false;
+	bool rightExist = false;
+
+	int leftChunkIdx = getLeftChunkIndex(chunkIdx);
+	int rightChunkIdx = getRightChunkIndex(chunkIdx);
+
+	ensure_capacity(world, leftChunkIdx);
+	ensure_capacity(world, rightChunkIdx);
+
+	if(leftChunkIdx >= 0 && leftChunkIdx < world->capacity){
+		if(world->items[leftChunkIdx].used){
+			leftExist = true;
+		}
+	}
+
+	if(rightChunkIdx >= 0 && rightChunkIdx < world->capacity){
+		if(world->items[rightChunkIdx].used){
+			rightExist = true;
+		}
+	}
+
+	//check step ahead
+	bool leftLeftExist  = false;
+	bool rightRightExist = false;
+
+	int leftLeftIdx   = getLeftChunkIndex(leftChunkIdx);
+	int rightRightIdx = getRightChunkIndex(rightChunkIdx);
+
+	ensure_capacity(world, leftLeftIdx);
+	ensure_capacity(world, rightRightIdx);
+
+	if(leftLeftIdx >= 0 && leftLeftIdx < world->capacity){
+		if(world->items[leftLeftIdx].used){
+			leftLeftExist = true;
+		}
+	}
+
+	if(rightRightIdx >= 0 && rightRightIdx < world->capacity){
+		if(world->items[rightRightIdx].used){
+			rightRightExist = true;
+		}
+	}
+
+	//if there is no left or right chunk
+	float chunkPixelWidth = (CHUNK_WIDTH*BLOCK_WIDTH);
+
+	Vector2 current_chunk_position = world->items[chunkIdx].position;
+	Vector2 leftPos  = {current_chunk_position.x - chunkPixelWidth, current_chunk_position.y};
+	Vector2 rightPos = {current_chunk_position.x + chunkPixelWidth, current_chunk_position.y};
+
+	Chunk unusedChunk;
+	unusedChunk.position = (Vector2){0.0f, 0.0f};
+	unusedChunk.used = false;
+
+	if(!leftExist && !rightExist){
+		Chunk left;
+		Chunk right;
+
+		left.position  =  leftPos;
+		left.used      =  true;
+
+		right.position = rightPos;
+		right.used     =  true;
+
+		init_chunk(&left);
+		init_chunk(&right);
+
+		world->items[leftChunkIdx] = left;
+		world->size++;
+
+		world->items[rightChunkIdx] = right;
+		world->size++;
+	}
+
+	if(!rightExist && leftExist){
+		Chunk right;
+
+		right.position = rightPos;
+		right.used     = true;
+
+		init_chunk(&right);
+
+		world->items[rightChunkIdx] = right;
+		world->size++;
+	}
+
+	if(!leftExist && rightExist){
+		Chunk left;
+
+		left.position = leftPos;
+		left.used     = true;
+
+		init_chunk(&left);
+
+		world->items[leftChunkIdx] = left;
+		world->size++;
+	}
+
+	//if both exist
+	if(leftExist && rightExist){
+		if(!leftLeftExist && !rightRightExist){
+			Chunk leftLeft;
+			leftLeft.position = (Vector2){current_chunk_position.x - (2*chunkPixelWidth), current_chunk_position.y};
+			leftLeft.used = true;
+
+			Chunk rightRight;
+			rightRight.position = (Vector2){current_chunk_position.x + (2*chunkPixelWidth), current_chunk_position.y};
+			rightRight.used = true;
+
+			init_chunk(&leftLeft);
+			init_chunk(&rightRight);
+
+			world->items[leftLeftIdx]   = leftLeft;
+			world->size++;
+
+			world->items[rightRightIdx] = rightRight;
+			world->size++;
+		}
+
+		if(!leftLeftExist && rightRightExist){
+			Chunk leftLeft;
+			leftLeft.position = (Vector2){current_chunk_position.x - (2 * chunkPixelWidth), current_chunk_position.y};
+			leftLeft.used = true;
+
+			init_chunk(&leftLeft);
+
+			world->items[leftLeftIdx]  = leftLeft;	
+			world->size++;
+		}
+
+		if(!rightRightExist && leftLeftExist){
+			Chunk rightRight;
+			rightRight.position = (Vector2){current_chunk_position.x + (2 * chunkPixelWidth), current_chunk_position.y};
+			rightRight.used = true;
+
+			init_chunk(&rightRight);
+
+			world->items[rightRightIdx] = rightRight;
+			world->size++;
+		}
+	}
+}
+
+void freeWorld(World *world)
+{
+	free(world->items);
+}
+
+void draw_World(World *world, int playerChunkCoordX)
+{
+	for(int i = -CHUNK_DISTANCE; i <= CHUNK_DISTANCE; i++){
+		int chunkIdx = chunk_index(playerChunkCoordX + i);
+
+		if(chunkIdx < 0 || chunkIdx >= world->size) continue;
+		draw_chunk(&world->items[chunkIdx]);
+
+		float x = world->items[chunkIdx].position.x;
+		float y = world->items[chunkIdx].position.y;
+		if(chunk_index(playerChunkCoordX) == chunk_index(chunk_coord(x))){
+			//DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, BLUE);
+		}else{
+			//DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, WHITE);
+		}
+	}
 }
