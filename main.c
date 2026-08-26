@@ -5,12 +5,22 @@
 #include <stdlib.h>
 
 // ------------ TODO -------------
-// -> Gameplay physics (pick, drop items, game mode)
+// -> Game Mode
 
 static int WINDOW_WIDTH  = 800;
 static int WINDOW_HEIGHT = 600;
 
 // --- macros ----
+#define da_append(array, item)\
+	do{\
+	if((array).size >= (array).capacity){\
+		(array).capacity = (array).capacity == 0 ? 10 : (array).capacity*2;\
+		(array).items = realloc((array).items, sizeof(*(array).items)*(array).capacity);\
+		if((array).items == NULL){perror("[DA APPEND]: Failed to Realloc\n"); exit(1);}\
+	}\
+	(array).items[(array).size++] = item;\
+	}while(0)\
+
 #define MAX(x,y) (x > y ? x : y)
 #define MIN(x,y) (x < y ? x : y)
 #define NONE -1
@@ -36,6 +46,8 @@ static int WINDOW_HEIGHT = 600;
 
 #define WORLD_SIZE 30
 #define INIT_WORLD_SIZE 5
+
+#define ITEM_DESPAWN_TIME 100.0f //seconds
 
 //----- camera ----
 Vector2 CAMERA;
@@ -74,7 +86,6 @@ typedef struct{
 typedef struct{
 	Vector2 position;
 	Block blocks[CHUNK_WIDTH*CHUNK_HEIGHT];
-
 	bool used;
 	bool structureGenerated;
 }Chunk;
@@ -94,6 +105,7 @@ typedef struct{
 	Inventory inventory;
 	Vector2 position;
 	Vector2 velocity;
+	Vector2 size;
 	bool isInGround;
 }Player;
 
@@ -102,6 +114,18 @@ typedef struct{
 	int y;
 }DirectionXY_i;
 
+typedef struct{
+	BlockType type;
+	Vector2 position;
+	Vector2 velocity;
+	float despawnTime;
+}Item;
+
+typedef struct{
+	Item *items;
+	size_t size;
+	size_t capacity;
+}DA_Item;
 
 // ---- Global variables ----------
 static Block* targetBlock = NULL;
@@ -126,12 +150,14 @@ int chunk_coord(float posX);
 int chunk_index(int chunk_coord);
 float idxToPosition(int chunkIdx);
 
+int getLocalX(World world, float worldX);
+int getLocalY(World world, float worldX, float worldY);
 
 int getLeftChunkIndex(int chunkIdx);
 int getRightChunkIndex(int chunkIdx);
 
 // block edit
-void breakBlock();
+void breakBlock(DA_Item* item);
 void placeBlock(World *world, Vector2 playerPos, Vector2 playerSize, BlockType type);
 void findHoveredBlock(World world, Vector2 playerPos, Vector2 playerSize);
 
@@ -166,11 +192,19 @@ float snapToBlockRight(float worldX);
 float snapToBlockLeft(float worldX);
 float snapToBlockTop(float worldY);
 float snapToBlockBottom(float worldY);
-void updatePlayer(Player* player, Vector2 playerSize, World world, float dt);
+void updatePlayer(Player* player, World world, float dt);
 
 Texture2D reSizeTexture(Texture2D texture, int width, int height);
 void drawInventory(Player player, int slotIndex);
 void getInventorySlotIndex(int* slotIndex);
+
+void addItem(DA_Item* item, BlockType type, Vector2 position);
+void drawItems(DA_Item item);
+void updateItem(DA_Item* item, World world, float dt);
+bool ItemCollide(World world, Vector2 itemPos, Vector2 itemSize);
+void pickItem(Player *player, DA_Item* item);
+bool addItemToInventory(Player* player, Item item);
+void resolveItemBlockOverlap(DA_Item* items, World world, int blockX, int blockY);
 
 // collision function
 bool player_collided(Chunk chunks[], Vector2 position, Vector2 size);
@@ -211,22 +245,21 @@ int main()
 	World world;
 	initWorld(&world);
 
-	// Chunk chunks[WORLD_SIZE];
-	// init_world(chunks, WORLD_SIZE);
+	DA_Item items = {0};
 
 	Player player = {
 		.inventory = {0},
 		.position = (Vector2){0, -50},
 		.velocity = {0},
+		.size = (Vector2){BLOCK_WIDTH-2, steve.height-2},
 		.isInGround = false
 	};
-	Vector2 playersize = {BLOCK_WIDTH-2, steve.height-2};
-	BlockType  SelectedBlock = WATER;
-	int slotIndex = 0;
+	BlockType  SelectedBlock = player.inventory.type[0];
+	unsigned int slotIndex = 0;
 
 	for(int i = 0; i < 9; i++){
 		player.inventory.type[i] = GetRandomValue(0, 13);
-		player.inventory.count[i] = 0;
+		player.inventory.count[i] = player.inventory.type[i] == AIR ? 0 : 1;
 	}
 
 	// ----------- game loop -------------------
@@ -234,7 +267,7 @@ int main()
 		// ------------------ update -------------------
 		float dt = GetFrameTime();
 
-		updatePlayer(&player, playersize, world, dt);
+		updatePlayer(&player, world, dt);
 		//check for new chunk
 		addChunk(&world, chunk_index(chunk_coord(player.position.x)));
 
@@ -254,11 +287,11 @@ int main()
 
 		// ------------ update chunks ---------------
 		//--- ray casting ---------
-		findHoveredBlock(world, player.position, playersize);
+		findHoveredBlock(world, player.position, player.size);
 
 		// ---- block breaking -----------
 		if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)){
-			breakBlock();
+			breakBlock(&items);
 		}else{
 			targetBlock = NULL;
 			breakProgress = 0.0f;
@@ -266,7 +299,7 @@ int main()
 
 		// ---- block placing -----------
 		if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)){
-			placeBlock(&world, player.position, playersize, SelectedBlock);
+			placeBlock(&world, player.position, player.size, SelectedBlock);
 		}
 
 		int playerChunkCoordX = chunk_coord(player.position.x);
@@ -282,12 +315,17 @@ int main()
 				generate_structure(&world, &world.items[chunkIdx]);
 			}
 		}
-	
+
+		//---update items----
+		updateItem(&items, world, dt);
+		pickItem(&player, &items);
+
 		// ------------ clear and draw --------------------
 		BeginDrawing();
 		ClearBackground(SKYBLUE);
 
 		draw_World(&world, chunk_coord(player.position.x));
+		drawItems(items);
 		drawInventory(player, slotIndex);
 
 		//DrawRectangle(player.position.x-CAMERA.x, player.position.y - CAMERA.y, playersize.x, playersize.y, RED);
@@ -307,6 +345,7 @@ int main()
 	// -------- close everything ------------------
 	unload_texture();
 	freeWorld(&world);
+	free(items.items);
 	CloseWindow();
 	return 0;
 }
@@ -332,8 +371,10 @@ float snapToBlockBottom(float worldY)
 	return (floorf(worldY / BLOCK_HEIGHT) + 1) * BLOCK_HEIGHT;
 }
 
-void updatePlayer(Player* player, Vector2 playerSize, World world, float dt)
+void updatePlayer(Player* player, World world, float dt)
 {
+	Vector2 playerSize= player->size;
+
 	player->velocity.x = 0;
 	player->velocity.y += GRAVITY * dt;
 
@@ -983,7 +1024,7 @@ DirectionXY_i blockPlayerDirection(World world, Vector2 playerPosition, int bloc
 	return (DirectionXY_i){targetX, targetY};
 }
 
-void breakBlock()
+void breakBlock(DA_Item* item)
 {
 	if(hoveredBlock != NULL && hoveredBlock->type != BEDROCK){
 
@@ -995,6 +1036,8 @@ void breakBlock()
 		breakProgress += GetFrameTime();
 
 		if(breakProgress >= TIME_TO_BREAK){
+			addItem(item, targetBlock->type, hitPosition);
+
 			targetBlock->isBreak = true;
 			targetBlock->type = AIR;
 			targetBlock = NULL;
@@ -1178,6 +1221,26 @@ bool is_cave(float worldX, float worldY)
     // A narrow band near zero creates continuous connected tunnels/tubes instead of scattered dots
     // Adjust the thickness (-0.18f to 0.18f) to make caves wider or thinner
     return (combined > -0.18f && combined < 0.18f);
+}
+
+int getLocalX(World world, float worldX)
+{
+	int chunkIdx = chunk_index(chunk_coord(worldX));
+	if(chunkIdx < 0 || chunkIdx >= world.capacity) return NONE;
+
+	int localX = (int)(worldX - world.items[chunkIdx].position.x) / BLOCK_WIDTH;
+
+	return localX;
+}
+
+int getLocalY(World world, float worldX, float worldY)
+{
+	int chunkIdx = chunk_index(chunk_coord(worldX));
+	if(chunkIdx < 0 || chunkIdx >= world.capacity) return NONE;
+
+	int localY = (int)(worldY - world.items[chunkIdx].position.y) / BLOCK_HEIGHT;
+
+	return localY;
 }
 
 bool isSolid(World world, float worldX, float worldY)
@@ -1970,7 +2033,8 @@ Texture2D reSizeTexture(Texture2D texture, int width, int height)
 	return texture;
 }
 
-void drawInventory(Player player, int slotIndex){
+void drawInventory(Player player, int slotIndex)
+{
 	float w = WINDOW_WIDTH/18;
 	float h = w;
 	float y = WINDOW_HEIGHT-h-20;
@@ -1978,7 +2042,6 @@ void drawInventory(Player player, int slotIndex){
 		BlockType type = player.inventory.type[i];
 		float x = (4*w)+ (i * w);
 
-		DrawRectangleLines(x,y,w, h, BLACK);
 		switch (type){
 			case GRASS:
 				DrawTexture(reSizeTexture(grassBlock,w,h), x , y, WHITE);
@@ -2027,6 +2090,15 @@ void drawInventory(Player player, int slotIndex){
 		}
 		if(i == slotIndex){
 			DrawRectangleLinesEx((Rectangle){x, y, w, h}, 3, BLACK);
+		}else{
+			DrawRectangleLines(x,y,w, h, BLACK);
+		}
+
+		if(player.inventory.count[i] > 0){
+			int font = w/3;
+			char itemCount[50];
+			sprintf(itemCount, "%d",player.inventory.count[i]);
+			DrawText(itemCount,x+w-font,y+h-font,font,BLACK);
 		}
 	}
 }
@@ -2042,4 +2114,237 @@ void getInventorySlotIndex(int* slotIndex)
 	if(IsKeyPressed(KEY_SEVEN)) *slotIndex =  6;
 	if(IsKeyPressed(KEY_EIGHT))	*slotIndex =  7;
 	if(IsKeyPressed(KEY_NINE)) 	*slotIndex =  8;
+}
+
+void addItem(DA_Item* item, BlockType type, Vector2 position)
+{
+	float vy = GetRandomValue(-100,-150);
+	float vx = GetRandomValue(50,100);
+
+	if(GetRandomValue(0,1)){
+		vx *= -1;
+	}
+
+	Item newItem = {
+		.type = type,
+		.position = position,
+		.velocity = (Vector2){vx, vy},
+		.despawnTime = ITEM_DESPAWN_TIME
+	};
+
+	da_append(*item, newItem);
+}
+
+void updateItem(DA_Item* item, World world, float dt)
+{
+	Vector2 itemSize = {BLOCK_WIDTH/2, BLOCK_HEIGHT/2};
+
+	for(int i = item->size - 1; i >= 0; i--){
+		item->items[i].despawnTime -= dt;
+
+		if(item->items[i].despawnTime <= 0){
+			//replace it
+			for(int j = i; j < item->size-1; j++){
+				item->items[j] = item->items[j+1];
+			}
+			item->size--;
+			continue;
+		}
+
+		item->items[i].position.x += item->items[i].velocity.x * dt;
+		item->items[i].velocity.x *= 0.99f;
+
+		Vector2 pos = item->items[i].position;
+
+		if(ItemCollide(world, pos, itemSize)){
+			item->items[i].position.x -= item->items[i].velocity.x * dt;
+			item->items[i].velocity.x = 0;
+		}
+
+		item->items[i].velocity.y += GRAVITY * dt;
+		item->items[i].position.y += item->items[i].velocity.y * dt;
+
+		pos = item->items[i].position;
+
+		if(ItemCollide(world, pos, itemSize)){
+			item->items[i].position.y -= item->items[i].velocity.y * dt;
+
+			if(item->items[i].velocity.y > 0){
+				item->items[i].velocity.x = 0; //stop slipping
+			}
+			item->items[i].velocity.y = 0;
+		}
+
+		// --- SELF-CONTAINED "BURIED" CHECK (Block placed on top) ---
+		// Check using the center of the item, not just top-left 'pos'
+		Vector2 itemCenter = {
+			item->items[i].position.x + (itemSize.x / 2.0f),
+			item->items[i].position.y + (itemSize.y / 2.0f)
+		};
+		
+		int chunkIdx = chunk_index(chunk_coord(itemCenter.x));
+		if(chunkIdx >= 0 && chunkIdx < world.capacity){
+			int lx = getLocalX(world, itemCenter.x);
+			int ly = getLocalY(world, itemCenter.x, itemCenter.y);
+			int idx = getIndex(lx, ly);
+
+			if(idx >= 0 && idx < CHUNK_WIDTH * CHUNK_HEIGHT){
+				// If the item's center is actually inside a solid block:
+				if(!world.items[chunkIdx].blocks[idx].isBreak){
+					// Calculate world Y top of this block
+					float chunk_world_y = world.items[chunkIdx].position.y; 
+					float blockTopY = chunk_world_y + (ly * BLOCK_HEIGHT);
+					
+					// Only push up if the item is positioned below or inside the top line
+					float targetY = blockTopY - itemSize.y;
+					if (item->items[i].position.y >= targetY - 2.0f) {
+						item->items[i].position.y = targetY;
+						item->items[i].velocity.y = 0; // Kill downward velocity
+					}
+				}
+			}
+		}
+	}
+}
+
+void drawItems(DA_Item item)
+{
+	float w = BLOCK_WIDTH/2; 
+	float h = BLOCK_HEIGHT/2;
+
+	for(int i = 0; i < item.size; i++){
+
+		float x = item.items[i].position.x - CAMERA.x;
+		float y = item.items[i].position.y - CAMERA.y;
+
+		switch(item.items[i].type){
+			case GRASS:
+				DrawTexture(reSizeTexture(grassBlock,w,h), x , y, WHITE);
+				break;
+			case STONE:
+				DrawTexture(reSizeTexture(stoneBlock,w,h), x , y, WHITE);
+				break;
+			case WATER:
+				DrawTexture(reSizeTexture(waterBlock,w,h), x , y, WHITE);
+				break;
+			case LAVA:
+				DrawTexture(reSizeTexture(lavaBlock,w,h), x , y, WHITE);
+				break;
+			case DIAMOND_ORE:
+				DrawTexture(reSizeTexture(diamondOre,w,h), x , y, WHITE);
+				break;
+			case IRON_ORE:
+				DrawTexture(reSizeTexture(ironOre,w,h), x , y, WHITE);
+				break;
+			case GOLD_ORE:
+				DrawTexture(reSizeTexture(goldOre,w,h), x , y, WHITE);
+				break;
+			case EMERALD_ORE:
+				DrawTexture(reSizeTexture(emeraldOre,w,h), x , y, WHITE);
+				break;
+			case COBBLESTONE:
+				DrawTexture(reSizeTexture(cobbleStone,w,h), x , y, WHITE);
+				break;
+			case OBSIDIAN:
+				DrawTexture(reSizeTexture(Obsidian,w,h), x , y, WHITE);
+				break;
+			case OAKLOG:
+				DrawTexture(reSizeTexture(oakLog,w,h), x , y, WHITE);
+				break;
+			case OAKLEAF:
+				DrawTexture(reSizeTexture(oakLeaf,w,h), x , y, WHITE);
+				break;
+			default:
+				break;
+		}	
+		DrawRectangleLines(x, y, w, h, BLACK);
+	}
+}
+
+bool ItemCollide(World world, Vector2 itemPos, Vector2 itemSize)
+{
+    // Shrink the bounding box slightly (by 2 pixels) to prevent false corner/edge snags
+    float inset = 2.0f;
+    float left = itemPos.x + inset;
+    float right = itemPos.x + itemSize.x - inset;
+    float top = itemPos.y + inset;
+    float bottom = itemPos.y + itemSize.y - inset;
+
+    int minX = floor(left / BLOCK_WIDTH);
+    int maxX = floor(right / BLOCK_WIDTH);
+    int minY = floor(top / BLOCK_HEIGHT);
+    int maxY = floor(bottom / BLOCK_HEIGHT);
+
+    for (int y = minY; y <= maxY; y++) {
+        for (int x = minX; x <= maxX; x++) {
+            int chunkIdx = chunk_index(chunk_coord(x * BLOCK_WIDTH));   
+            if (chunkIdx < 0 || chunkIdx >= world.capacity) continue;
+
+            Vector2 chunk_pos = world.items[chunkIdx].position;
+            int localX = x - (int)(chunk_pos.x / BLOCK_WIDTH);
+            int localY = y - (int)(chunk_pos.y / BLOCK_HEIGHT);
+
+            if (localX < 0 || localX >= CHUNK_WIDTH) continue;
+            if (localY < 0 || localY >= CHUNK_HEIGHT) continue;
+
+            if (!world.items[chunkIdx].blocks[getIndex(localX, localY)].isBreak) {
+                return true; // Solid block hit
+            }
+        }
+    }
+    return false;
+}
+
+bool addItemToInventory(Player* player, Item item)
+{
+	for(int i = 0; i < 9; i++){
+		if(player->inventory.type[i] == AIR){
+			player->inventory.type[i] = item.type;	
+			player->inventory.count[i] = 1;
+			return true;
+		}
+
+		if(player->inventory.type[i] == item.type && player->inventory.count[i] < 10){
+			player->inventory.count[i]++;
+			return true;
+		}
+	}
+	return false;
+}
+
+void pickItem(Player *player, DA_Item* item)
+{
+	float pickUpRadius = 48.0f;
+
+	Vector2 playerCenter = {
+		player->position.x + (player->size.x/2.0f),
+		player->position.y + (player->size.y/2.0f)
+	};
+
+	Vector2 itemSize = {BLOCK_WIDTH/2, BLOCK_HEIGHT/2};
+
+	for(int i = item->size-1; i >= 0; i--){
+
+		Vector2 itemCenter = {
+            item->items[i].position.x + (itemSize.x/2),
+            item->items[i].position.y +	(itemSize.y/2) 
+        };
+
+        float dx = playerCenter.x - itemCenter.x;
+        float dy = playerCenter.y - itemCenter.y;
+
+        float dist_sq = (dx*dx) + (dy*dy);
+
+        if(dist_sq <= pickUpRadius*pickUpRadius){
+
+        	bool added = addItemToInventory(player, item->items[i]);
+
+        	if(added){
+        		for(int j = i; j < item->size-1; j++){
+        			item->items[j] = item->items[j+1];
+        		}
+        		item->size--;
+        	}
+        }
+	}
 }
