@@ -86,6 +86,12 @@ typedef struct{
 }World;
 
 typedef struct{
+	BlockType type[9];
+	size_t count[9];
+}Inventory;
+
+typedef struct{
+	Inventory inventory;
 	Vector2 position;
 	Vector2 velocity;
 	bool isInGround;
@@ -95,6 +101,7 @@ typedef struct{
 	int x;
 	int y;
 }DirectionXY_i;
+
 
 // ---- Global variables ----------
 static Block* targetBlock = NULL;
@@ -161,6 +168,10 @@ float snapToBlockTop(float worldY);
 float snapToBlockBottom(float worldY);
 void updatePlayer(Player* player, Vector2 playerSize, World world, float dt);
 
+Texture2D reSizeTexture(Texture2D texture, int width, int height);
+void drawInventory(Player player, int slotIndex);
+void getInventorySlotIndex(int* slotIndex);
+
 // collision function
 bool player_collided(Chunk chunks[], Vector2 position, Vector2 size);
 
@@ -204,12 +215,19 @@ int main()
 	// init_world(chunks, WORLD_SIZE);
 
 	Player player = {
+		.inventory = {0},
 		.position = (Vector2){0, -50},
 		.velocity = {0},
 		.isInGround = false
 	};
 	Vector2 playersize = {BLOCK_WIDTH-2, steve.height-2};
 	BlockType  SelectedBlock = WATER;
+	int slotIndex = 0;
+
+	for(int i = 0; i < 9; i++){
+		player.inventory.type[i] = GetRandomValue(0, 13);
+		player.inventory.count[i] = 0;
+	}
 
 	// ----------- game loop -------------------
 	while(!WindowShouldClose()){
@@ -220,11 +238,9 @@ int main()
 		//check for new chunk
 		addChunk(&world, chunk_index(chunk_coord(player.position.x)));
 
-		if(IsKeyPressed(KEY_ONE))   SelectedBlock = WATER;
-		if(IsKeyPressed(KEY_TWO))   SelectedBlock = STONE;
-		if(IsKeyPressed(KEY_THREE)) SelectedBlock = LAVA;
-		if(IsKeyPressed(KEY_FOUR))  SelectedBlock = OBSIDIAN;
-		if(IsKeyPressed(KEY_FIVE))  SelectedBlock = COBBLESTONE;
+
+		getInventorySlotIndex(&slotIndex);
+		SelectedBlock = player.inventory.type[slotIndex];
 
 		// -- look for window resize ----
 		if(IsWindowResized()){
@@ -269,9 +285,10 @@ int main()
 	
 		// ------------ clear and draw --------------------
 		BeginDrawing();
-		ClearBackground(BLACK);
+		ClearBackground(SKYBLUE);
 
 		draw_World(&world, chunk_coord(player.position.x));
+		drawInventory(player, slotIndex);
 
 		//DrawRectangle(player.position.x-CAMERA.x, player.position.y - CAMERA.y, playersize.x, playersize.y, RED);
 		DrawTexture(steve, player.position.x-CAMERA.x, player.position.y-CAMERA.y, WHITE);
@@ -462,7 +479,7 @@ void draw_chunk(Chunk* chunk)
 void init_chunk(Chunk* chunk)
 {
 	float thirdHalf = (CHUNK_HEIGHT*BLOCK_HEIGHT)/3.0f;
-    float waterLevel = 1000.0f; 
+    float waterLevel = 0.0f; 
     for(int x = 0; x < CHUNK_WIDTH; x++){
         float worldX = chunk->position.x + (x * BLOCK_WIDTH);
         float surface = noise(worldX);
@@ -734,6 +751,7 @@ int getRightChunkIndex(int chunkIdx)
 
 void placeBlockAt(World *world, int blockChunkIdx, int targetX, int targetY, BlockType type, Vector2 playerPos, Vector2 playerSize)
 {
+	if(type == AIR) return;
 	if(targetX >= 0 && targetX < CHUNK_WIDTH && targetY >= 0 && targetY < CHUNK_HEIGHT){
 		int targetIdx = getIndex(targetX, targetY);
 
@@ -1943,4 +1961,85 @@ void draw_World(World *world, int playerChunkCoordX)
 			// DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, WHITE);
 		}
 	}
+}
+
+Texture2D reSizeTexture(Texture2D texture, int width, int height)
+{
+	texture.width = width;
+	texture.height = height;
+	return texture;
+}
+
+void drawInventory(Player player, int slotIndex){
+	float w = WINDOW_WIDTH/18;
+	float h = w;
+	float y = WINDOW_HEIGHT-h-20;
+	for(int i = 0; i < 9; i++){
+		BlockType type = player.inventory.type[i];
+		float x = (4*w)+ (i * w);
+
+		DrawRectangleLines(x,y,w, h, BLACK);
+		switch (type){
+			case GRASS:
+				DrawTexture(reSizeTexture(grassBlock,w,h), x , y, WHITE);
+				break;
+			case STONE:
+				DrawTexture(reSizeTexture(stoneBlock,w,h), x , y, WHITE);
+				break;
+			case AIR:
+				// DrawRectangle(x, y,w,h, GRAY);
+				break;
+			case WATER:
+				DrawTexture(reSizeTexture(waterBlock,w,h), x , y, WHITE);
+				break;
+			case BEDROCK:
+				DrawTexture(reSizeTexture(bedRock,w,h), x , y, WHITE);
+				break;
+			case LAVA:
+				DrawTexture(reSizeTexture(lavaBlock,w,h), x , y, WHITE);
+				break;
+			case DIAMOND_ORE:
+				DrawTexture(reSizeTexture(diamondOre,w,h), x , y, WHITE);
+				break;
+			case IRON_ORE:
+				DrawTexture(reSizeTexture(ironOre,w,h), x , y, WHITE);
+				break;
+			case GOLD_ORE:
+				DrawTexture(reSizeTexture(goldOre,w,h), x , y, WHITE);
+				break;
+			case EMERALD_ORE:
+				DrawTexture(reSizeTexture(emeraldOre,w,h), x , y, WHITE);
+				break;
+			case COBBLESTONE:
+				DrawTexture(reSizeTexture(cobbleStone,w,h), x , y, WHITE);
+				break;
+			case OBSIDIAN:
+				DrawTexture(reSizeTexture(Obsidian,w,h), x , y, WHITE);
+				break;
+			case OAKLOG:
+				DrawTexture(reSizeTexture(oakLog,w,h), x , y, WHITE);
+				break;
+			case OAKLEAF:
+				DrawTexture(reSizeTexture(oakLeaf,w,h), x , y, WHITE);
+				break;
+			default:
+				break;
+		}
+		if(i == slotIndex){
+			DrawRectangleLinesEx((Rectangle){x, y, w, h}, 3, BLACK);
+		}
+	}
+}
+
+void getInventorySlotIndex(int* slotIndex)
+{
+	if(IsKeyPressed(KEY_ONE))   *slotIndex =  0;
+	if(IsKeyPressed(KEY_TWO))   *slotIndex =  1;
+	if(IsKeyPressed(KEY_THREE)) *slotIndex =  2;
+	if(IsKeyPressed(KEY_FOUR))  *slotIndex =  3;
+	if(IsKeyPressed(KEY_FIVE)) 	*slotIndex =  4;
+	if(IsKeyPressed(KEY_SIX)) 	*slotIndex =  5;
+	if(IsKeyPressed(KEY_SEVEN)) *slotIndex =  6;
+	if(IsKeyPressed(KEY_EIGHT))	*slotIndex =  7;
+	if(IsKeyPressed(KEY_NINE)) 	*slotIndex =  8;
 }
