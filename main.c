@@ -4,8 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// ------------ TODO -------------
-// -> add sound [?]
 
 static int WINDOW_WIDTH  = 800;
 static int WINDOW_HEIGHT = 600;
@@ -44,7 +42,6 @@ static int WINDOW_HEIGHT = 600;
 #define MOVE_SPEED 150.0f
 #define JUMP_FORCE 250.0f
 
-#define WORLD_SIZE 30
 #define INIT_WORLD_SIZE 5
 
 #define INVENTORY_SLOT_COUNT 9
@@ -139,7 +136,7 @@ typedef struct{
 static Block* targetBlock = NULL;
 static Block* hoveredBlock = NULL;
 static float breakProgress = 0.0f;
-const float TIME_TO_BREAK = 0.6f; 
+const float TIME_TO_BREAK = 0.85f; 
 Vector2 hitPosition = {0};
 
 static float worldSeedOffset = 0.0f;
@@ -148,7 +145,6 @@ static float worldSeedOffset = 0.0f;
 void InitializeWorldSeed();
 
 void init_chunk(Chunk* chunk);
-void init_world(Chunk chunks[], int size);
 void draw_chunk(Chunk* chunk);
 
 int getIndex(int x, int y);
@@ -214,14 +210,15 @@ void pickItem(Player *player, DA_Item* item, int slotIndex);
 bool addItemToInventory(Player* player, Item item, int slotIndex);
 
 // collision function
-bool player_collided(Chunk chunks[], Vector2 position, Vector2 size);
-
 bool AABB(Vector2 posA, Vector2 sizeA, Vector2 posB, Vector2 sizeB);
 bool rect_circle_collision(Vector2 rectPos, Vector2 rectSize, Vector2 circlePos, float circleRadius);
 bool point_rect_collision(Vector2 point, Vector2 rectPos, Vector2 rectSize);
 
 void load_texture();
 void unload_texture();
+
+void load_sound();
+void unload_sound();
 
 // ------------ textures ------------------
 Texture2D grassBlock;
@@ -239,14 +236,22 @@ Texture2D Obsidian;
 Texture2D oakLog;
 Texture2D oakLeaf;
 
+// ----- Sounds ------
+Sound stonePlace;
+Sound stoneBreaking;
+Sound itemPick;
+
 int main()
 {
 	// ------ initialize ----------
 	SetConfigFlags(FLAG_WINDOW_RESIZABLE);
 	InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Minecraft 2D");
+	InitAudioDevice();
 	SetTargetFPS(60);
 
 	load_texture();
+	load_sound();
+
 	InitializeWorldSeed();
 
 	World world;
@@ -306,12 +311,7 @@ int main()
 		findHoveredBlock(world, player.position, player.size);
 
 		// ---- block breaking -----------
-		if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)){
-			breakBlock(&items);
-		}else{
-			targetBlock = NULL;
-			breakProgress = 0.0f;
-		}
+		breakBlock(&items);
 
 		// ---- block placing -----------
 		if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)){
@@ -367,8 +367,12 @@ int main()
 
 	// -------- close everything ------------------
 	unload_texture();
+	unload_sound();
+
 	freeWorld(&world);
 	free(items.items);
+
+	CloseAudioDevice();
 	CloseWindow();
 	return 0;
 }
@@ -650,21 +654,6 @@ void init_chunk(Chunk* chunk)
     }
 }
 
-void init_world(Chunk chunks[], int size)
-{
-	InitializeWorldSeed();
-	Vector2 pos = {0,0};
-	for(int i = 0; i < size; i++){
-		Vector2 chunk_position = (Vector2){pos.x + (i*(CHUNK_WIDTH * BLOCK_WIDTH)), pos.y - (CHUNK_HEIGHT/2) * BLOCK_HEIGHT};
-		chunk_position.x -= (size/2)*(CHUNK_WIDTH*BLOCK_WIDTH);
-
-		int chunkIdx = chunk_index(chunk_coord(chunk_position.x));
-		chunks[chunkIdx].position = chunk_position;
-
-		init_chunk(&chunks[chunkIdx]);
-	}
-}
-
 int chunk_index(int chunk_coord)
 {
 	if(chunk_coord >= 0){
@@ -737,31 +726,20 @@ void unload_texture()
 	UnloadTexture(oakLeaf);
 }
 
-bool player_collided(Chunk chunks[], Vector2 position, Vector2 size)
-{	
-	int playerChunkCoordX = chunk_coord(position.x);	
-	for(int i = -1; i <= 1; i++){ //only check current , left and right chunk
-		int chunkIdx = chunk_index(playerChunkCoordX + i);
-
-		if(chunkIdx < 0 || chunkIdx >= WORLD_SIZE) continue;
-
-		for(int y = 0; y < CHUNK_HEIGHT; y++){
-			for(int x = 0; x < CHUNK_WIDTH; x++){
-				int idx = getIndex(x,y);
-
-				if(chunks[chunkIdx].blocks[idx].isBreak) continue;
-
-				Vector2 bpos = {chunks[chunkIdx].position.x + (x * BLOCK_WIDTH), chunks[chunkIdx].position.y + (y * BLOCK_HEIGHT)};
-				Vector2 bsize = {BLOCK_WIDTH, BLOCK_HEIGHT};
-
-				if(AABB(position, size, bpos, bsize)){
-					return true;
-				}
-			}
-		}
-	}
-	return false;
+void load_sound()
+{
+	stonePlace    = LoadSound("Sounds/stonePlace.mp3");
+	stoneBreaking = LoadSound("Sounds/stoneBreaking.mp3");
+	itemPick      = LoadSound("Sounds/itemPick.mp3");
 }
+
+void unload_sound()
+{
+	UnloadSound(stonePlace);
+	UnloadSound(stoneBreaking);
+	UnloadSound(itemPick);
+}
+
 
 bool AABB(Vector2 posA, Vector2 sizeA, Vector2 posB, Vector2 sizeB)
 {
@@ -868,6 +846,8 @@ bool placeBlockAt(World *world, int blockChunkIdx, int targetX, int targetY, Blo
 					world->items[blockChunkIdx].blocks[targetIdx].type = type;
 					world->items[blockChunkIdx].blocks[targetIdx].fluid_level = NONE;
 					world->items[blockChunkIdx].blocks[targetIdx].fluid_parent = (FluidParent){NONE, NONE, NONE};
+
+					PlaySound(stonePlace);
 					return true;
 				}
 			}
@@ -1067,24 +1047,38 @@ DirectionXY_i blockPlayerDirection(World world, Vector2 playerPosition, int bloc
 
 void breakBlock(DA_Item* item)
 {
-	if(hoveredBlock != NULL && hoveredBlock->type != BEDROCK){
+	if(IsMouseButtonDown(MOUSE_BUTTON_LEFT)){
+		if(hoveredBlock != NULL && hoveredBlock->type != BEDROCK){
 
-		if(targetBlock != hoveredBlock){
-			targetBlock = hoveredBlock;
-			breakProgress = 0.0f;
-		}
+			if(targetBlock != hoveredBlock){
+				targetBlock = hoveredBlock;
+				breakProgress = 0.0f;
+			}
 
-		breakProgress += GetFrameTime();
+			breakProgress += GetFrameTime();
+			if(!IsSoundPlaying(stoneBreaking)){
+				PlaySound(stoneBreaking);
+			}
 
-		if(breakProgress >= TIME_TO_BREAK){
-			addItem(item, targetBlock->type, hitPosition);
+			if(breakProgress >= TIME_TO_BREAK){
+				addItem(item, targetBlock->type, hitPosition);
 
-			targetBlock->isBreak = true;
-			targetBlock->type = AIR;
+				targetBlock->isBreak = true;
+				targetBlock->type = AIR;
+				targetBlock = NULL;
+				breakProgress = 0.0f;
+
+			}
+		}else{
+			StopSound(stoneBreaking);
+
 			targetBlock = NULL;
 			breakProgress = 0.0f;
 		}
+
 	}else{
+		StopSound(stoneBreaking);
+
 		targetBlock = NULL;
 		breakProgress = 0.0f;
 	}
@@ -1881,7 +1875,7 @@ void addChunk(World *world, int chunkCoordX)
 
 	if(chunkIdx < 0){return; } 
 
-	ensure_capacity(world, chunkIdx);//if player somehow exceeds the capacity , just scale the it
+	ensure_capacity(world, chunkIdx);//if player somehow exceeds the capacity , just scale it
 
 	if(!world->items[chunkIdx].used){
 		float x = idxToPosition(chunkIdx);
@@ -1933,9 +1927,9 @@ void draw_World(World *world, int playerChunkCoordX)
 		float x = world->items[chunkIdx].position.x;
 		float y = world->items[chunkIdx].position.y;
 		if(chunk_index(playerChunkCoordX) == chunk_index(chunk_coord(x))){
-			DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, BLUE);
+			// DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, BLUE);
 		}else{
-			DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, WHITE);
+			// DrawRectangleLinesEx((Rectangle){x-CAMERA.x,y-CAMERA.y,CHUNK_WIDTH*BLOCK_WIDTH, CHUNK_HEIGHT*BLOCK_HEIGHT}, 3, WHITE);
 		}
 	}
 }
@@ -2103,8 +2097,7 @@ void updateItem(DA_Item* item, World world, float dt)
 			item->items[i].velocity.y = 0;
 		}
 
-		// --- SELF-CONTAINED "BURIED" CHECK (Block placed on top) ---
-		// Check using the center of the item, not just top-left 'pos'
+		// Buried item CHECK (Block placed on top)
 		Vector2 itemCenter = {
 			item->items[i].position.x + (itemSize.x / 2.0f),
 			item->items[i].position.y + (itemSize.y / 2.0f)
@@ -2280,6 +2273,8 @@ void pickItem(Player *player, DA_Item* item, int slotIndex)
         	bool added = addItemToInventory(player, item->items[i], slotIndex);
 
         	if(added){
+        		PlaySound(itemPick);
+
         		for(int j = i; j < item->size-1; j++){
         			item->items[j] = item->items[j+1];
         		}
