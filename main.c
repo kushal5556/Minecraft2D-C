@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-
 static int WINDOW_WIDTH  = 800;
 static int WINDOW_HEIGHT = 600;
 
@@ -53,6 +52,10 @@ static int WINDOW_HEIGHT = 600;
 Vector2 CAMERA;
 
 //----------- structs -----------
+typedef enum{
+	LEFT, RIGHT, TOP, BOTTOM
+}BlockFace;
+
 typedef enum{
 	CREATIVE = 0,
 	SURVIVAL
@@ -115,11 +118,6 @@ typedef struct{
 }Player;
 
 typedef struct{
-	int x;
-	int y;
-}DirectionXY_i;
-
-typedef struct{
 	BlockType type;
 	Vector2 position;
 	Vector2 velocity;
@@ -138,6 +136,7 @@ static Block* hoveredBlock = NULL;
 static float breakProgress = 0.0f;
 const float TIME_TO_BREAK = 0.85f; 
 Vector2 hitPosition = {0};
+Vector2 rayHitPosition = {0};
 
 static float worldSeedOffset = 0.0f;
 
@@ -165,7 +164,7 @@ void breakBlock(DA_Item* item);
 bool placeBlock(World *world, Vector2 playerPos, Vector2 playerSize, BlockType type);
 void findHoveredBlock(World world, Vector2 playerPos, Vector2 playerSize);
 
-DirectionXY_i blockPlayerDirection(World world, Vector2 playerPosition, int blockChunkIdx);
+BlockFace getBlockFaceFromRay(Vector2 rectPos, Vector2 rectSize, Vector2 playerCenter, Vector2 rayEnd);
 bool placeBlockAt(World *world, int blockChunkIdx, int targetX, int targetY, BlockType type, Vector2 playerPos, Vector2 playerSize);
 bool isBlockBreak(World world, int blockX, int blockY, int chunkIdx);
 
@@ -360,6 +359,7 @@ int main()
 			sprintf(coord, "X: %.2f | Y: %.2f", (player.position.x/BLOCK_WIDTH), (player.position.y/BLOCK_HEIGHT));
 			timer = 0.0f;
 		}
+		DrawCircle(rayHitPosition.x - CAMERA.x, rayHitPosition.y - CAMERA.y, 2, WHITE);
 		DrawText(coord, 5, 35,15, WHITE);
 		DrawFPS(5,5);
 		EndDrawing();
@@ -874,175 +874,56 @@ bool isBlockBreak(World world, int blockX, int blockY, int chunkIdx)
 	return world.items[targetChunk].blocks[idx].isBreak;
 }
 
-DirectionXY_i blockPlayerDirection(World world, Vector2 playerPosition, int blockChunkIdx)
+BlockFace getBlockFaceFromRay(Vector2 rectPos, Vector2 rectSize, Vector2 playerCenter, Vector2 rayEnd)
 {
+    // Box boundaries
+    float xMin = rectPos.x;
+    float xMax = rectPos.x + rectSize.x;
+    float yMin = rectPos.y;
+    float yMax = rectPos.y + rectSize.y;
 
-	int blockX = (int)(hitPosition.x - world.items[blockChunkIdx].position.x) / BLOCK_WIDTH;
-	int blockY = (int)(hitPosition.y - world.items[blockChunkIdx].position.y) / BLOCK_HEIGHT;
+    // Ray direction vector from player to rayEnd
+    float dirX = rayEnd.x - playerCenter.x;
+    float dirY = rayEnd.y - playerCenter.y;
 
-	float blockWorldX = hitPosition.x;
-	float playerWorldX = playerPosition.x;	
+    // Calculate intersection t-values for all 4 planes
+    float tXMin = (dirX != 0) ? (xMin - playerCenter.x) / dirX : -1.0f;
+    float tXMax = (dirX != 0) ? (xMax - playerCenter.x) / dirX : -1.0f;
+    float tYMin = (dirY != 0) ? (yMin - playerCenter.y) / dirY : -1.0f;
+    float tYMax = (dirY != 0) ? (yMax - playerCenter.y) / dirY : -1.0f;
 
-	int playerX = (int)(playerPosition.x - world.items[blockChunkIdx].position.x) / BLOCK_WIDTH;
-	int playerY = (int)(playerPosition.y - world.items[blockChunkIdx].position.y) / BLOCK_WIDTH;
+    // Find the entry time (maximum of minimums for entry axes)
+    // We only care about valid t values between 0.0 and 1.0
+    float tEntry = -1.0f;
+    BlockFace hitFace = -1;
 
-	int targetX = -1;
-	int targetY = -1;
+    // Check X planes
+    if (dirX < 0 && tXMax >= 0 && tXMax <= 1.0f){
+        if (tXMax > tEntry) { 
+        	tEntry = tXMax; 
+        	hitFace = RIGHT; 
+        }
+    } else if (dirX > 0 && tXMin >= 0 && tXMin <= 1.0f){
+        if (tXMin > tEntry){ 
+        	tEntry = tXMin; 
+        	hitFace = LEFT; 
+        }
+    }
 
-	if(blockWorldX == playerWorldX){
-		//up or down
-		if(blockY < playerY){
-			targetX = blockX;
-			targetY = blockY +1;
-		}else{
-			targetX = blockX;
-			targetY = blockY -1;
-		}
-	}else if(blockWorldX < playerWorldX){
-		//left 
-		if(blockY <= playerY){
-			//up or same height
-			if(blockY < playerY-1){
-			//more than 2 block up
-				targetX = blockX;							
-				targetY = blockY + 1; //if not down,down
-				if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-					//right
-					targetX = blockX + 1; 
-					targetY = blockY;
-				}
-			}else{	
-				//right
-				if(blockX < playerX-1){
-					targetX = blockX + 1;//if not right, right
-					targetY = blockY;
-					if(!isBlockBreak(world,targetX, targetY, blockChunkIdx)){
-						//down
-						targetX = blockX;
-						targetY = blockY + 1;
-					}
-				}else{
-					if(blockY < playerY){
-						targetX = blockX;
-						targetY = blockY + 1;//if not down, down
-						if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-							//right
-							targetX = blockX + 1;
-							targetY = blockY;
-						}
-					}else{
-						targetX = blockX + 1;
-						targetY = blockY;
-					}
-				}
-			}
-		}else{
-			//down
-			if(blockY > playerY+1){
-				//more than 2 block down
-				targetX = blockX;
-				targetY = blockY - 1;//if not up, up
-				if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-					//right
-					targetX = blockX + 1;
-					targetY = blockY;
-				}
-			}else{
-				if(blockX < playerX-1){
-					//more than 2 block left
-					//right
-					targetX = blockX + 1;//if not right, right
-					targetY = blockY;
-					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-						//up
-						targetX = blockX;
-						targetY = blockY - 1;
-					}
-				}else{
-					targetX = blockX;
-					targetY = blockY - 1; //if not up, up
-					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-						//right
-						targetX = blockX + 1;
-						targetY = blockY;
-					}
-				}	
-			}
-		}
-	}else if(blockWorldX > playerWorldX){
-		//right
-		if(blockY <= playerY){
-			//up or same level
-			if(blockY < playerY-1){
-				//more than 2 block up
-				targetX = blockX;
-				targetY = blockY + 1;//if not below, below
-				if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-					//left
-					targetX = blockX - 1;  
-					targetY = blockY;
-				}
-			}else{
-				//left
-				if(blockX > playerX+1){
-					targetX = blockX - 1;//if not left, left
-					targetY = blockY;
-					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-						targetX = blockX;
-						targetY = blockY + 1;
-						//down
-					}
-				}else{
-					if(blockY < playerY){
-						targetX = blockX;
-						targetY = blockY + 1;//if not down, down
-						if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-							//left
-							targetX = blockX - 1; 
-							targetY = blockY;
-						}
-					}else{
-						targetX = blockX - 1;
-						targetY = blockY;
-					}
-				}
-			}
-		}else{
-			//down
-			if(blockY > playerY + 1){
-				//more than 2 block, down
-				targetX = blockX;
-				targetY = blockY - 1;//if not up, up
-				if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-					//left
-					targetX = blockX - 1; //Issue here
-					targetY = blockY;	
-				}
-			}else{
-				if(blockX > playerX+1){
-					// more than 2 block right	
-					//left
-					targetX = blockX - 1;//if not left, left
-					targetY = blockY;
-					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-						//up
-						targetX = blockX;
-						targetY = blockY - 1;
-					}
-				}else{
-					targetX = blockX;
-					targetY = blockY - 1; //if not up, up
-					if(!isBlockBreak(world, targetX, targetY, blockChunkIdx)){
-						// left
-						targetX = blockX - 1; 
-						targetY = blockY;
-					}
-				}
-			}
-		}
-	}
+    // Check Y planes
+    if (dirY < 0 && tYMax >= 0 && tYMax <= 1.0f){
+        if (tYMax > tEntry){ 
+        	tEntry = tYMax; 
+        	hitFace = BOTTOM; 
+        }
+    } else if (dirY > 0 && tYMin >= 0 && tYMin <= 1.0f){
+        if (tYMin > tEntry){ 
+        	tEntry = tYMin; 
+        	hitFace = TOP; 
+        }
+    }
 
-	return (DirectionXY_i){targetX, targetY};
+    return hitFace;
 }
 
 void breakBlock(DA_Item* item)
@@ -1089,10 +970,33 @@ bool placeBlock(World *world, Vector2 playerPos, Vector2 playerSize, BlockType t
 	if(hoveredBlock != NULL){
 		int blockChunkIdx = chunk_index(chunk_coord(hitPosition.x));
 
-		//find direction 
-		DirectionXY_i direction = blockPlayerDirection(*world, playerPos, blockChunkIdx);
-		int targetX = direction.x;
-		int targetY = direction.y;
+		// BlockFace face = getBlockFace(hitPosition, (Vector2){BLOCK_WIDTH, BLOCK_HEIGHT}, rayHitPosition, playerPos);
+		Vector2 playerCenter = {
+			playerPos.x + (playerSize.x/2),
+			playerPos.y + (playerSize.y/2),
+		};
+		BlockFace face = getBlockFaceFromRay(hitPosition, (Vector2){BLOCK_WIDTH, BLOCK_HEIGHT}, playerCenter, rayHitPosition);
+
+		int blockX = (int)(hitPosition.x - world->items[blockChunkIdx].position.x) / BLOCK_WIDTH;
+		int blockY = (int)(hitPosition.y - world->items[blockChunkIdx].position.y) / BLOCK_HEIGHT;
+
+		int targetX = blockX;
+		int targetY = blockY;
+
+		switch(face){
+			case LEFT:
+				targetX = blockX - 1;
+				break;
+			case RIGHT:
+				targetX = blockX + 1;
+				break;
+			case TOP:
+				targetY = blockY - 1;
+				break;
+			case BOTTOM:
+				targetY = blockY + 1;
+				break;
+		}
 
 		//place blocks
 		//find the correct chunk
@@ -1138,6 +1042,7 @@ void findHoveredBlock(World world, Vector2 playerPos, Vector2 playerSize)
 	float ny = dy/dist;
 
 	hoveredBlock = NULL;
+	rayHitPosition = (Vector2){-99999, 99999};
 	for(int step = 0; step < PLAYER_REACH_DISTANCE*BLOCK_WIDTH; step += RAY_STEP){
 
 		playerRay.x = playerCenter.x + (step * nx);
@@ -1170,6 +1075,7 @@ void findHoveredBlock(World world, Vector2 playerPos, Vector2 playerSize)
 
 					hoveredBlock = &world.items[rayChunkIdx].blocks[idx];
 					hitPosition = bpos;
+					rayHitPosition = playerRay;
 					break;
 				}
 			}
