@@ -350,7 +350,6 @@ int main()
 		drawItems(items);
 		drawInventory(player, slotIndex);
 
-		//DrawRectangle(player.position.x-CAMERA.x, player.position.y - CAMERA.y, playersize.x, playersize.y, RED);
 		DrawTexture(steve, player.position.x-CAMERA.x, player.position.y-CAMERA.y, WHITE);
 		static float timer = 0.0f;
 		timer += dt;
@@ -543,14 +542,14 @@ void draw_chunk(Chunk* chunk)
 				DrawRectangleLines(blockX - CAMERA.x, blockY - CAMERA.y, BLOCK_WIDTH, BLOCK_HEIGHT, BLACK);	
 			}
 
-			// If this specific block is currently being mined, draw a progress overlay
+			// If block is currently being mined
 			if (&chunk->blocks[idx] == targetBlock && breakProgress > 0.0f) {
-			    // Option A: Simple semi-transparent dark overlay showing progress
+			    //semi-transparent dark progress overlay 
 			    float alpha = breakProgress / TIME_TO_BREAK;
-			   DrawRectangle(blockX - CAMERA.x, blockY - CAMERA.y, BLOCK_WIDTH, BLOCK_HEIGHT, (Color){0, 0, 0, (unsigned char)(alpha * 150)});
+			    DrawRectangle(blockX - CAMERA.x, blockY - CAMERA.y, BLOCK_WIDTH, BLOCK_HEIGHT, (Color){0, 0, 0, (unsigned char)(alpha * 150)});
 			    
-			    // Option B: Draw a mini progress bar above the block
-			   DrawRectangle(blockX - CAMERA.x, blockY - CAMERA.y - 8, BLOCK_WIDTH, 5, LIGHTGRAY);
+			    //progress bar above the block
+			    DrawRectangle(blockX - CAMERA.x, blockY - CAMERA.y - 8, BLOCK_WIDTH, 5, LIGHTGRAY);
 			    DrawRectangle(blockX - CAMERA.x, blockY - CAMERA.y - 8, BLOCK_WIDTH * (breakProgress / TIME_TO_BREAK), 5, GREEN);
 			}
 		}
@@ -579,7 +578,7 @@ void init_chunk(Chunk* chunk)
             	.y = NONE
             };
 
-            // Bedrock at the bottom of the chunk (maximum positive Y)
+            // Bedrock at the bottom of the chunk 
             if(y == CHUNK_HEIGHT - 1 || worldY >= (chunk->position.y + (CHUNK_HEIGHT * BLOCK_HEIGHT) - (BLOCK_HEIGHT * GetRandomValue(1,3)))) {
                 chunk->blocks[idx].type = BEDROCK;
                 continue;
@@ -598,8 +597,8 @@ void init_chunk(Chunk* chunk)
                 continue;
             }
 
-            // Underground Caves & Lava check
-            // Only carve caves if we are deep enough underground (e.g., 60 pixels below surface)
+            // --------Underground Caves & Lava check------
+            // Only carve caves if we are deep enough underground (like 60 pixels below surface)
             bool carveCave = false;
             if(worldY > surface + 60.0f) {
                 if(is_cave(worldX, worldY)) {
@@ -634,7 +633,7 @@ void init_chunk(Chunk* chunk)
             } else {
                 BlockType blockType = STONE;
 
-                // Ores spawn deeper underground (+Y coordinates)
+                // Ores spawn underground 
                 float depthUnderground = worldY - surface;
                 float randVal = pseudo_random_2d((int)worldX, (int)worldY);
                 
@@ -739,7 +738,6 @@ void unload_sound()
 	UnloadSound(stoneBreaking);
 	UnloadSound(itemPick);
 }
-
 
 bool AABB(Vector2 posA, Vector2 sizeA, Vector2 posB, Vector2 sizeB)
 {
@@ -886,14 +884,14 @@ BlockFace getBlockFaceFromRay(Vector2 rectPos, Vector2 rectSize, Vector2 playerC
     float dirX = rayEnd.x - playerCenter.x;
     float dirY = rayEnd.y - playerCenter.y;
 
-    // Calculate intersection t-values for all 4 planes
+    // Calculate intersection t-values for all 4 sides
     float tXMin = (dirX != 0) ? (xMin - playerCenter.x) / dirX : -1.0f;
     float tXMax = (dirX != 0) ? (xMax - playerCenter.x) / dirX : -1.0f;
     float tYMin = (dirY != 0) ? (yMin - playerCenter.y) / dirY : -1.0f;
     float tYMax = (dirY != 0) ? (yMax - playerCenter.y) / dirY : -1.0f;
 
     // Find the entry time (maximum of minimums for entry axes)
-    // We only care about valid t values between 0.0 and 1.0
+    // valid t values between 0.0 and 1.0
     float tEntry = -1.0f;
     BlockFace hitFace = -1;
 
@@ -970,7 +968,6 @@ bool placeBlock(World *world, Vector2 playerPos, Vector2 playerSize, BlockType t
 	if(hoveredBlock != NULL){
 		int blockChunkIdx = chunk_index(chunk_coord(hitPosition.x));
 
-		// BlockFace face = getBlockFace(hitPosition, (Vector2){BLOCK_WIDTH, BLOCK_HEIGHT}, rayHitPosition, playerPos);
 		Vector2 playerCenter = {
 			playerPos.x + (playerSize.x/2),
 			playerPos.y + (playerSize.y/2),
@@ -1533,7 +1530,6 @@ void fluid_system(World *world, Chunk *chunk)
 	}
 }
 
-// infinite world 
 void ensure_capacity(World *world, int targetIdx) 
 {
     if (targetIdx < 0) return;
@@ -1569,9 +1565,14 @@ void generate_structure(World *world, Chunk *chunk)
     	for(int y = 0; y < CHUNK_HEIGHT; y++){
     		int idx = getIndex(x, y);
 
+    		int worldX = chunk->position.x + (x * BLOCK_WIDTH);
+    		int worldY = chunk->position.y + (y * BLOCK_HEIGHT);
+
+			float randVal = pseudo_random_2d(worldX, worldY);
+
     		if(GRASS == chunk->blocks[idx].type){
-    			  //trees on top of grass/surface
-                if(GetRandomValue(0, 5) == 0){
+			    //trees on top of grass/surface
+                if(randVal > 0.5f){
                 	int treeHeight = GetRandomValue(3, 6); 
                 	bool isEmpty = true;
 
@@ -2003,7 +2004,7 @@ void updateItem(DA_Item* item, World world, float dt)
 			item->items[i].velocity.y = 0;
 		}
 
-		// Buried item CHECK (Block placed on top)
+		// Buried item Check (Block placed on top)
 		Vector2 itemCenter = {
 			item->items[i].position.x + (itemSize.x / 2.0f),
 			item->items[i].position.y + (itemSize.y / 2.0f)
@@ -2016,7 +2017,7 @@ void updateItem(DA_Item* item, World world, float dt)
 			int idx = getIndex(lx, ly);
 
 			if(idx >= 0 && idx < CHUNK_WIDTH * CHUNK_HEIGHT){
-				// If the item's center is actually inside a solid block:
+				// If item's center is  inside solid block:
 				if(!world.items[chunkIdx].blocks[idx].isBreak){
 					// Calculate world Y top of this block
 					float chunk_world_y = world.items[chunkIdx].position.y; 
