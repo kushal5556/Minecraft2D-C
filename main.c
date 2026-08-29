@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "ui.c"
 
 static int WINDOW_WIDTH  = 800;
 static int WINDOW_HEIGHT = 600;
@@ -52,6 +53,10 @@ static int WINDOW_HEIGHT = 600;
 Vector2 CAMERA;
 
 //----------- structs -----------
+typedef enum{
+	HOME, GAME
+}Page;
+
 typedef enum{
 	LEFT, RIGHT, TOP, BOTTOM
 }BlockFace;
@@ -275,93 +280,162 @@ int main()
 		player.inventory.count[i] = 0;
 	}
 
+	// ===========================
+	Page PAGE = HOME;
+	int sizeFactor = 5;
+	float center_X = (WINDOW_WIDTH/2) - ((WINDOW_WIDTH/sizeFactor)/2);
+	float center_Y = (WINDOW_HEIGHT/2) - ((WINDOW_HEIGHT/sizeFactor)/2);
+	float size_x = WINDOW_WIDTH/sizeFactor;
+	float size_y = WINDOW_HEIGHT/sizeFactor;
+
+	ActionButton playButton = getActionButton(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Start Game");
+	ActionButton quitButtonHome = getActionButton(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Quit Game");
+
+	ActionButton quitButtonGame   = getActionButton(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Exit Game");
+	ActionButton resumeButtonGame = getActionButton(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Resume Game");
+
 	// ----------- game loop -------------------
 	while(!WindowShouldClose()){
 		// ------------------ update -------------------
 		float dt = GetFrameTime();
 
-		updatePlayer(&player, world, dt, gameMode);
-		//check for new chunk
-		addChunk(&world,chunk_coord(player.position.x));
-
-		if(IsKeyPressed(KEY_TAB)){
-			if(gameMode == SURVIVAL){
-				gameMode = CREATIVE;
-			}else{
-				gameMode = SURVIVAL;
-			}
-		}
-
-		getInventorySlotIndex(&slotIndex);
-		SelectedBlock = player.inventory.type[slotIndex];
-
 		// -- look for window resize ----
 		if(IsWindowResized()){
 			WINDOW_WIDTH = GetRenderWidth();
 			WINDOW_HEIGHT = GetRenderHeight();
+
+			// -- re-scale bui --
+			center_X = (WINDOW_WIDTH/2) - ((WINDOW_WIDTH/sizeFactor)/2);
+			center_Y = (WINDOW_HEIGHT/2) - ((WINDOW_HEIGHT/sizeFactor)/2);
+			size_x = WINDOW_WIDTH/sizeFactor;
+			size_y = WINDOW_HEIGHT/sizeFactor;
+
+			playButton       = getActionButton(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Start Game");
+			quitButtonHome   = getActionButton(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Quit Game");
+			quitButtonGame   = getActionButton(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Exit Game");
+			resumeButtonGame = getActionButton(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Resume Game");
 		}
 
-		// --- update camera (centered around player) --------------
-		CAMERA.x = player.position.x - (WINDOW_WIDTH/2);
-		CAMERA.y = player.position.y - (WINDOW_HEIGHT/2);
-
-		// ------------ update chunks ---------------
-		//--- ray casting ---------
-		findHoveredBlock(world, player.position, player.size);
-
-		// ---- block breaking -----------
-		breakBlock(&items);
-
-		// ---- block placing -----------
-		if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)){
-			bool placed = placeBlock(&world, player.position, player.size, SelectedBlock);
-			if(placed && gameMode == SURVIVAL){
-				deleteItemInventory(&player.inventory,slotIndex, SelectedBlock);
+		if(HOME == PAGE){
+			if(PRESSED == playButton.state){
+				PAGE = GAME;
 			}
-		}
-
-		int playerChunkCoordX = chunk_coord(player.position.x);
-		static float update_timer = 0.0f;
-		update_timer += dt;
-		if(update_timer >= 0.2f){
-			update_timer = 0.0f;
-			for(int i = -CHUNK_DISTANCE; i <= CHUNK_DISTANCE; i++){
-				int chunkIdx = chunk_index(playerChunkCoordX + i);
-
-				if(chunkIdx < 0 || chunkIdx >= world.capacity) continue;
-				fluid_system(&world, &world.items[chunkIdx]);
-				generate_structure(&world, &world.items[chunkIdx]);
+			if(PRESSED == quitButtonHome.state){
+				break;
 			}
+			updateActionButton(&playButton);
+			updateActionButton(&quitButtonHome);
+
+			BeginDrawing();
+			ClearBackground(BLACK);
+
+			drawActionButton_D(playButton);
+			drawActionButton_D(quitButtonHome);
+
+			EndDrawing();
+		}else if(GAME == PAGE){
+			static bool settingUI = false;
+			if(IsKeyPressed(KEY_BACKSPACE)){
+				if(settingUI) settingUI = false;
+				else settingUI = true;
+			}
+
+			if(settingUI){
+				if(PRESSED == quitButtonGame.state){
+					settingUI = false;
+					PAGE = HOME;
+				}
+				if(PRESSED == resumeButtonGame.state){
+					settingUI = false;
+				}
+
+				updateActionButton(&quitButtonGame);
+				updateActionButton(&resumeButtonGame);
+			}else{
+				updatePlayer(&player, world, dt, gameMode);
+				//check for new chunk
+				addChunk(&world,chunk_coord(player.position.x));
+
+				if(IsKeyPressed(KEY_TAB)){
+					if(gameMode == SURVIVAL){
+						gameMode = CREATIVE;
+					}else{
+						gameMode = SURVIVAL;
+					}
+				}
+
+				getInventorySlotIndex(&slotIndex);
+				SelectedBlock = player.inventory.type[slotIndex];
+
+				// --- update camera (centered around player) --------------
+				CAMERA.x = player.position.x - (WINDOW_WIDTH/2);
+				CAMERA.y = player.position.y - (WINDOW_HEIGHT/2);
+
+				// ------------ update chunks ---------------
+				//--- ray casting ---------
+				findHoveredBlock(world, player.position, player.size);
+
+				// ---- block breaking -----------
+				breakBlock(&items);
+
+				// ---- block placing -----------
+				if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)){
+					bool placed = placeBlock(&world, player.position, player.size, SelectedBlock);
+					if(placed && gameMode == SURVIVAL){
+						deleteItemInventory(&player.inventory,slotIndex, SelectedBlock);
+					}
+				}
+
+				int playerChunkCoordX = chunk_coord(player.position.x);
+				static float update_timer = 0.0f;
+				update_timer += dt;
+				if(update_timer >= 0.2f){
+					update_timer = 0.0f;
+					for(int i = -CHUNK_DISTANCE; i <= CHUNK_DISTANCE; i++){
+						int chunkIdx = chunk_index(playerChunkCoordX + i);
+
+						if(chunkIdx < 0 || chunkIdx >= world.capacity) continue;
+						fluid_system(&world, &world.items[chunkIdx]);
+						generate_structure(&world, &world.items[chunkIdx]);
+					}
+				}
+
+				if(IsKeyPressed(KEY_Q)){
+					deleteItemInventory(&player.inventory, slotIndex, SelectedBlock);
+				}
+
+				//---update items----
+				updateItem(&items, world, dt);
+				pickItem(&player, &items, slotIndex);
+			}
+
+			// ------------ clear and draw --------------------
+			BeginDrawing();
+			ClearBackground(SKYBLUE);
+
+			draw_World(&world, chunk_coord(player.position.x));
+			drawItems(items);
+			drawInventory(player, slotIndex);
+
+			DrawTexture(steve, player.position.x-CAMERA.x, player.position.y-CAMERA.y, WHITE);
+			static float timer = 0.0f;
+			timer += dt;
+			char coord[100];
+			if(timer >= 0.3f){
+				sprintf(coord, "X: %.2f | Y: %.2f", (player.position.x/BLOCK_WIDTH), (player.position.y/BLOCK_HEIGHT));
+				timer = 0.0f;
+			}
+			DrawCircle(rayHitPosition.x - CAMERA.x, rayHitPosition.y - CAMERA.y, 2, WHITE);
+			DrawText(coord, 5, 35,15, WHITE);
+			DrawFPS(5,5);
+
+			if(settingUI){
+				drawActionButton_D(quitButtonGame);
+				drawActionButton_D(resumeButtonGame);
+			}
+
+			EndDrawing();
 		}
-
-		if(IsKeyPressed(KEY_Q)){
-			deleteItemInventory(&player.inventory, slotIndex, SelectedBlock);
-		}
-
-		//---update items----
-		updateItem(&items, world, dt);
-		pickItem(&player, &items, slotIndex);
-
-		// ------------ clear and draw --------------------
-		BeginDrawing();
-		ClearBackground(SKYBLUE);
-
-		draw_World(&world, chunk_coord(player.position.x));
-		drawItems(items);
-		drawInventory(player, slotIndex);
-
-		DrawTexture(steve, player.position.x-CAMERA.x, player.position.y-CAMERA.y, WHITE);
-		static float timer = 0.0f;
-		timer += dt;
-		char coord[100];
-		if(timer >= 0.3f){
-			sprintf(coord, "X: %.2f | Y: %.2f", (player.position.x/BLOCK_WIDTH), (player.position.y/BLOCK_HEIGHT));
-			timer = 0.0f;
-		}
-		DrawCircle(rayHitPosition.x - CAMERA.x, rayHitPosition.y - CAMERA.y, 2, WHITE);
-		DrawText(coord, 5, 35,15, WHITE);
-		DrawFPS(5,5);
-		EndDrawing();
 	}
 
 	// -------- close everything ------------------
