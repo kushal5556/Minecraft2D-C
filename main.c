@@ -288,17 +288,17 @@ int main()
 	float size_x = WINDOW_WIDTH/sizeFactor;
 	float size_y = WINDOW_HEIGHT/sizeFactor;
 
-	ActionButton playButton = getActionButton(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Start Game");
-	ActionButton quitButtonHome = getActionButton(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Quit Game");
+	ActionButton_D playButton = getActionButton_D(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Start Game");
+	ActionButton_D quitButtonHome = getActionButton_D(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Quit Game");
 
-	ActionButton quitButtonGame   = getActionButton(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Exit Game");
-	ActionButton resumeButtonGame = getActionButton(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Resume Game");
+	ActionButton_D quitButtonGame   = getActionButton_D(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Exit Game");
+	ActionButton_D resumeButtonGame = getActionButton_D(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Resume Game");
 
 	// ----------- game loop -------------------
 	while(!WindowShouldClose()){
 		// ------------------ update -------------------
 		float dt = GetFrameTime();
-
+		Vector2 mouse = GetMousePosition();
 		// -- look for window resize ----
 		if(IsWindowResized()){
 			WINDOW_WIDTH = GetRenderWidth();
@@ -310,10 +310,10 @@ int main()
 			size_x = WINDOW_WIDTH/sizeFactor;
 			size_y = WINDOW_HEIGHT/sizeFactor;
 
-			playButton       = getActionButton(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Start Game");
-			quitButtonHome   = getActionButton(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Quit Game");
-			quitButtonGame   = getActionButton(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Exit Game");
-			resumeButtonGame = getActionButton(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Resume Game");
+			playButton       = getActionButton_D(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Start Game");
+			quitButtonHome   = getActionButton_D(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Quit Game");
+			quitButtonGame   = getActionButton_D(center_X,center_Y-(size_y/2)-2, size_x, size_y, "Exit Game");
+			resumeButtonGame = getActionButton_D(center_X,center_Y+(size_y/2)+2, size_x, size_y, "Resume Game");
 		}
 
 		if(HOME == PAGE){
@@ -323,8 +323,8 @@ int main()
 			if(PRESSED == quitButtonHome.state){
 				break;
 			}
-			updateActionButton(&playButton);
-			updateActionButton(&quitButtonHome);
+			updateActionButton_D(&playButton, mouse);
+			updateActionButton_D(&quitButtonHome, mouse);
 
 			BeginDrawing();
 			ClearBackground(BLACK);
@@ -349,8 +349,8 @@ int main()
 					settingUI = false;
 				}
 
-				updateActionButton(&quitButtonGame);
-				updateActionButton(&resumeButtonGame);
+				updateActionButton_D(&quitButtonGame, mouse);
+				updateActionButton_D(&resumeButtonGame, mouse);
 			}else{
 				updatePlayer(&player, world, dt, gameMode);
 				//check for new chunk
